@@ -106,3 +106,39 @@ P1 milestone shipped. The world is no longer empty.
 **Encountered & noted.** Outputs scratchpad files were silently truncated and padded with NUL bytes by the editor tool on two of the larger writes. Worked around by stripping NULs before SHA verification, then later by writing via bash heredoc to /tmp and atomic-renaming from there. The flaky-mount staging pattern continues to be load-bearing — every project-folder write was first-try after the pattern was applied. WORKLOG and TODO themselves had to be rebuilt whole in this session because earlier sessions had left them truncated.
 
 **Next session candidates.** P2 (belief field): the central distinguishing mechanic. The citizen positions are already there; we need the 2D density grid + heatmap overlay + the per-cast strength lookup. Alternative: P1.5 (food/forage) if growth feels weird in playtest, or the citizen sprite polish (death frame, sub-tile walk animation).
+
+## 2026-05-20 (P2 ship) — Belief field
+
+P2 milestone shipped. The central distinguishing mechanic of *Densitas* now exists in code: belief is a per-faction 2D scalar field arising from citizen positions, queryable at any world tile, with a toggleable heatmap overlay.
+
+**Decisions folded in before coding:**
+
+- **Grid resolution 64x48** mirrors the default 256x192 world at 4-tile sampling. Each belief cell aggregates a 4x4 patch of world tiles. Tunable via `config.toml`.
+- **Kernel: scatter-then-blur.** Each living citizen splats `amplitude=1.0` into their cell, then the per-faction grid is convolved with 2 passes of a separable 3-wide box filter (~ Gaussian σ ≈ 1.4 cells = 5.6 world tiles). Box blur is volume-preserving, so `total(faction) == population(faction)` exactly (mod float drift). This makes the integral interpretable; tests assert it.
+- **No SciPy.** Box blur via numpy cumulative-sum trick keeps the dependency footprint at numpy alone.
+- **Cadence: tied to citizen tick (5 Hz).** Belief is a pure function of current positions; no time-decay (locked in GDD §13).
+- **DYING citizens excluded from belief.** Consistent with `CitizenManager.population()`.
+- **`Renderer` ABC extended again.** `blit_belief_overlay` is now part of the contract. Implementations cache by `belief.version` to skip rebuild work between recomputes.
+- **Overlay color model:** per-faction tint (cyan for Open Eye, red for Maw), per-cell alpha scaled by max magnitude, blend by faction-weight where they overlap. Off by default; toggle key `B`.
+- **HUD shows belief total** next to population. With amplitude=1 this lands at ~population; the small DYING gap is the signal.
+
+**Code shipped:**
+
+- `Densitas_belief.md` (6453 bytes) — full P2 spec: pillars, grid, kernel, recompute cadence, query API, regen accounting, overlay, faction isolation, deliberately omitted, contract with rest of codebase, tunables.
+- `densitas/belief.py` (7663 bytes) — `BeliefField` class, scatter-then-blur math, query/total/peak/dominant_faction/grid API, `version` counter for renderer caching, `N_FACTIONS = 2` constant.
+- `densitas/render.py` (rev, 14030 bytes) — `Renderer.blit_belief_overlay` abstract added; `PixelRenderer` implementation builds the (gh, gw, 4) RGBA cell array, faction-weighted blend, alpha from magnitude, nearest-neighbor scale to world pixel dims, cached by belief.version.
+- `densitas/main.py` (rev, 5860 bytes) — instantiates `BeliefField`, recomputes after each `citizen_mgr.tick`, wires the `B` keydown to `show_belief_overlay`, paints overlay after world surface but before citizens, debug HUD shows `belief here` at the center tile plus total / peak.
+- `densitas/hud.py` (rev, 3490 bytes) — adds BELIEF readout (cyan, 16pt bold) inside the same bottom-left card. Box grew from 72px to 88px tall.
+- `densitas/config.py` (rev, 2306 bytes) — `BeliefConfig` frozen dataclass; `Config` carries `belief`.
+- `config.toml` (rev, 2846 bytes) — adds `[belief]` block. 7 tunables (grid_w, grid_h, amplitude, blur_passes, blur_radius, recompute_hz, overlay_alpha_max).
+- `tests/test_belief.py` (6005 bytes) — 13 tests: empty world, single-citizen volume preservation, total==population, DYING exclusion, faction isolation, peak under citizen position, query matches grid, query edge clamping, dominant_faction, version counter, recompute idempotence, zero-blur-passes path, N_FACTIONS constant.
+
+**Sandbox verification:**
+
+- All 32 unit tests pass (8 P0 + 11 P1 + 13 P2).
+- Headless smoke (SDL dummy): 60 s of sim (300 ticks at 5 Hz) runs in 80 ms wall (≈ 3750x realtime). Belief recompute average <1 ms at the early populations. Overlay first-build (64x48 → 4096x3072 nearest-neighbor scale) is ~22 ms; cached blits are ~0.4 ms/frame. The 22 ms hit lands at 5 Hz which is a ~11% CPU slice when the overlay is on — acceptable for a P2 prototype, noted as a future optimization (downscale-target intermediate, or per-frame-visible-region scale).
+- 90 s of sim with overlay-each-frame rendering: ran clean, pop 19, belief total 19.00 (matches population to the cent), peak ~1.0.
+
+**Encountered & noted.** Pytest's tempdir cleanup recurses infinitely on the project mount (likely a permissions/lstat quirk). Worked around by copying `densitas/`, `tests/`, and `config.toml` to `/tmp/densitas_test_run/` and running pytest there. All staging into the project folder continues via the bash-heredoc → /tmp → atomic-rename pattern; every P2 file landed first-try with SHA verification.
+
+**Next session candidates.** P2.5 (fog of war) is a natural next step — the belief field is the input the visibility computation needs. Alternatively jump to P3 (Powers T0–T1 + Relics): the `belief.query` primitive is already in place for per-cast strength scaling, and relic placement only needs a click handler + a sprite on the map. P1.5 (food) remains parked unless playtest reveals growth weirdness.

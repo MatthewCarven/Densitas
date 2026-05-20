@@ -30,7 +30,7 @@ spawn_radius_tiles  = 5       # spawn within this Chebyshev distance of map cent
 spawn_seed          = 0       # XOR'd with world.seed; bump to reshuffle initial positions
 maturity_age        = 8.0     # sim seconds before able to reproduce
 lifespan_mean       = 180.0   # sim seconds (mean of truncated Gaussian)
-lifespan_jitter     = 40.0    # ± this around the mean (truncated at mean ± 2·jitter)
+lifespan_jitter     = 40.0    # +/- this around the mean (truncated at mean +/- 2*jitter)
 repro_radius        = 2       # Chebyshev tile distance to find a mate
 repro_cooldown      = 5.0     # sim seconds after MATE before eligible again
 mate_duration       = 0.5     # MATE state duration
@@ -41,3 +41,14 @@ wander_radius       = 6       # tiles around home_x/y for picking targets
 wander_speed        = 1.0     # tiles per sim second
 # Tick rate ------------------------------------------------------------------
 tick_hz             = 5       # simulation ticks per second (logic only; render is fps_target)
+
+[belief]
+# Belief = 2D scalar field over the world; rebuilt each citizen tick from
+# citizen positions. See Densitas_belief.md for the math.
+grid_w            = 64        # belief cells across (4 world-tiles per cell at default world)
+grid_h            = 48        # belief cells tall
+amplitude         = 1.0       # per-citizen splat magnitude (1.0 -> total == population)
+blur_passes       = 2         # 2 passes of 3-wide box blur ~ Gaussian sigma 1.4 cells
+blur_radius       = 1         # cells (kernel width = 2*radius + 1)
+recompute_hz      = 5         # match citizen tick_hz
+overlay_alpha_max = 180       # 0..255; peak alpha at the densest cell

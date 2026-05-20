@@ -65,11 +65,23 @@ class CitizenConfig:
 
 
 @dataclass(frozen=True)
+class BeliefConfig:
+    grid_w: int
+    grid_h: int
+    amplitude: float
+    blur_passes: int
+    blur_radius: int
+    recompute_hz: int
+    overlay_alpha_max: int
+
+
+@dataclass(frozen=True)
 class Config:
     world: WorldConfig
     render: RenderConfig
     camera: CameraConfig
     citizen: CitizenConfig
+    belief: BeliefConfig
 
 
 def load(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
@@ -82,4 +94,5 @@ def load(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
         render=RenderConfig(**raw["render"]),
         camera=CameraConfig(**raw["camera"]),
         citizen=CitizenConfig(**raw["citizen"]),
+        belief=BeliefConfig(**raw["belief"]),
     )

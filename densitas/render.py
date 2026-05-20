@@ -2,8 +2,8 @@
 
 The Renderer interface is intentionally narrow so a future VectorRenderer
 can be dropped in without touching world/camera/main code. Implementations
-share the same `build_world_surface`, `blit_viewport`, and `blit_citizens`
-contract.
+share the same `build_world_surface`, `blit_viewport`, `blit_citizens`,
+and `blit_belief_overlay` contract.
 """
 from __future__ import annotations
 import abc
@@ -32,7 +32,7 @@ PIXEL_PALETTE: dict[Tile, tuple[tuple[int, int, int],
 }
 
 # Citizen sprite palette per faction.
-# (skin, robe, accent, outline) — outline doubles as foot shadow.
+# (skin, robe, accent, outline) - outline doubles as foot shadow.
 CITIZEN_PALETTE: dict[int, tuple[tuple[int, int, int], tuple[int, int, int],
                                   tuple[int, int, int], tuple[int, int, int]]] = {
     # Faction 0 = Open Eye (player). Parchment robe + cyan accent.
@@ -44,13 +44,20 @@ CITIZEN_PALETTE: dict[int, tuple[tuple[int, int, int], tuple[int, int, int],
 CITIZEN_W = 8    # sprite width in pixels
 CITIZEN_H = 16   # sprite height in pixels
 
+# Belief overlay tints per faction (R,G,B). Alpha is computed per cell from
+# field magnitude.
+BELIEF_TINT: dict[int, tuple[int, int, int]] = {
+    0: (90, 200, 220),   # Open Eye - cyan
+    1: (220, 60, 60),    # Maw - red
+}
+
 
 class Renderer(abc.ABC):
     """Abstract renderer.
 
     Implementations:
-      PixelRenderer  — active.
-      VectorRenderer — todo. Subclass and add a branch to make_renderer().
+      PixelRenderer  - active.
+      VectorRenderer - todo. Subclass and add a branch to make_renderer().
     """
 
     def __init__(self, cfg: RenderConfig):
@@ -83,12 +90,20 @@ class Renderer(abc.ABC):
         """
         ...
 
+    @abc.abstractmethod
+    def blit_belief_overlay(self, screen: pygame.Surface, belief,
+                             cam_x: float, cam_y: float) -> None:
+        """Blit a heatmap of the belief field over the viewport.
+        `belief` is a BeliefField. Implementations cache by belief.version.
+        """
+        ...
+
 
 class PixelRenderer(Renderer):
     """Pixel-art renderer.
 
     Each tile type has N procedurally-textured variants.
-    Each citizen faction has (Facing × 2 walk frames + 1 idle) sprites.
+    Each citizen faction has (Facing x 2 walk frames + 1 idle) sprites.
     """
 
     def __init__(self, cfg: RenderConfig, rng_seed: int = 0,
@@ -101,6 +116,9 @@ class PixelRenderer(Renderer):
         # frame: 0 = idle, 1 = walk-A, 2 = walk-B
         self._citizen_sprites: dict[tuple[int, int, int], pygame.Surface] = {}
         self._build_citizen_sprites()
+        # Belief overlay cache: rebuilt on belief.version change.
+        self._belief_cache_version: int = -1
+        self._belief_overlay_world: pygame.Surface | None = None
 
     # -- tile sprites -------------------------------------------------------
 
@@ -113,7 +131,6 @@ class PixelRenderer(Renderer):
                 surf.fill(base)
                 noise = self._rng.random((ts, ts))
                 surf_arr = pygame.surfarray.pixels3d(surf)
-                # pygame.surfarray returns (width, height, 3); transpose to match.
                 detail_mask = noise.T > 0.65
                 accent_mask = noise.T > 0.92
                 surf_arr[detail_mask] = detail
@@ -136,18 +153,9 @@ class PixelRenderer(Renderer):
     # -- citizen sprites ----------------------------------------------------
 
     def _build_citizen_sprites(self) -> None:
-        """Paint 3 frames × 4 facings × N factions of 8×16 pixel humanoids.
-
-        Sprite layout (8×16):
-            rows 0-3   : head
-            rows 4-9   : torso (robe)
-            rows 10-13 : legs
-            rows 14-15 : feet
-        Walk frames alternate which leg is forward (rows 10-13).
-        """
         for faction, (skin, robe, accent, outline) in CITIZEN_PALETTE.items():
             for facing in Facing:
-                for frame in range(3):  # 0=idle, 1=walk-A, 2=walk-B
+                for frame in range(3):
                     surf = self._paint_citizen(faction, facing, frame,
                                                 skin, robe, accent, outline)
                     self._citizen_sprites[(faction, int(facing), frame)] = surf
@@ -156,28 +164,24 @@ class PixelRenderer(Renderer):
     def _paint_citizen(faction: int, facing: Facing, frame: int,
                         skin, robe, accent, outline) -> pygame.Surface:
         surf = pygame.Surface((CITIZEN_W, CITIZEN_H), pygame.SRCALPHA)
-        surf.fill((0, 0, 0, 0))  # transparent
+        surf.fill((0, 0, 0, 0))
 
         def px(x: int, y: int, c) -> None:
             if 0 <= x < CITIZEN_W and 0 <= y < CITIZEN_H:
                 surf.set_at((x, y), c)
 
-        # --- Head (8×4 region, rows 0–3) ---
-        # A 4×4 head centered horizontally (cols 2..5).
+        # --- Head (rows 0-3) ---
         for hy in range(0, 4):
             for hx in range(2, 6):
                 px(hx, hy, skin)
-        # Head outline
         for hy in range(0, 4):
             px(1, hy, outline)
             px(6, hy, outline)
         px(2, 0, outline); px(5, 0, outline)
 
-        # Eye highlights — facing-dependent
         if facing == Facing.SOUTH:
             px(3, 2, outline); px(4, 2, outline)
         elif facing == Facing.NORTH:
-            # Back of head — show hair tuft accent
             for hx in range(2, 6):
                 px(hx, 1, accent)
         elif facing == Facing.EAST:
@@ -185,27 +189,21 @@ class PixelRenderer(Renderer):
         elif facing == Facing.WEST:
             px(2, 2, outline); px(3, 2, outline)
 
-        # --- Torso (rows 4–9) ---
-        # 6-wide robe (cols 1..6)
+        # --- Torso (rows 4-9) ---
         for ty in range(4, 10):
             for tx in range(1, 7):
                 px(tx, ty, robe)
-        # Robe shading — left side darker
         for ty in range(4, 10):
             px(1, ty, outline)
             px(6, ty, outline)
-        # Accent stripe down center (the holy band)
         px(3, 5, accent); px(4, 5, accent)
         px(3, 7, accent); px(4, 7, accent)
 
-        # Arms — simple side blocks
         if facing in (Facing.SOUTH, Facing.NORTH):
             for ay in range(5, 9):
                 px(0, ay, robe); px(7, ay, robe)
-            # Hands
             px(0, 9, skin); px(7, 9, skin)
         elif facing == Facing.EAST:
-            # Right arm forward, left tucked
             for ay in range(5, 9):
                 px(7, ay, robe)
             px(7, 9, skin)
@@ -214,25 +212,21 @@ class PixelRenderer(Renderer):
                 px(0, ay, robe)
             px(0, 9, skin)
 
-        # --- Legs (rows 10–13) ---
-        # Frame 0 (idle): both legs straight, cols 2-3 and 4-5
-        # Frame 1 (walk-A): left leg forward
-        # Frame 2 (walk-B): right leg forward
+        # --- Legs (rows 10-13) ---
         if frame == 0:
             for ly in range(10, 14):
-                for lx in range(2, 4):  # left leg
+                for lx in range(2, 4):
                     px(lx, ly, robe)
-                for lx in range(4, 6):  # right leg
+                for lx in range(4, 6):
                     px(lx, ly, robe)
         elif frame == 1:
-            # left forward (shifted one row), right back
             for ly in range(10, 13):
                 for lx in range(2, 4):
                     px(lx, ly, robe)
             for ly in range(11, 14):
                 for lx in range(4, 6):
                     px(lx, ly, robe)
-        else:  # frame == 2
+        else:
             for ly in range(11, 14):
                 for lx in range(2, 4):
                     px(lx, ly, robe)
@@ -240,7 +234,6 @@ class PixelRenderer(Renderer):
                 for lx in range(4, 6):
                     px(lx, ly, robe)
 
-        # Foot pixels (rows 14-15) — outline only, suggesting shadow.
         for fy in (14, 15):
             for fx in range(2, 6):
                 px(fx, fy, outline)
@@ -255,27 +248,87 @@ class PixelRenderer(Renderer):
         vw, vh = self.cfg.viewport_w, self.cfg.viewport_h
         cx_int = int(cam_x)
         cy_int = int(cam_y)
-        # Pre-bind locals (tight loop)
         sprites = self._citizen_sprites
         blit = screen.blit
         for c in citizens:
-            # World-pixel position of sprite's center-bottom.
             wx = int(c.x * ts) - cx_int + (ts - CITIZEN_W) // 2
             wy = int(c.y * ts) - cy_int + (ts - CITIZEN_H)
-            # Cull off-screen.
             if wx + CITIZEN_W < 0 or wy + CITIZEN_H < 0 or wx >= vw or wy >= vh:
                 continue
-            # Frame selection.
             if c.state == CitizenState.WANDER:
-                # Walk cycle: alternate frames every 0.25 sim sec.
                 frame = 1 if (int(sim_time / 0.25) + c.id) & 1 else 2
             else:
                 frame = 0
             sprite = sprites.get((c.faction, int(c.facing), frame))
             if sprite is None:
-                # Fallback to faction 0 idle south
                 sprite = sprites[(0, int(Facing.SOUTH), 0)]
             blit(sprite, (wx, wy))
+
+    # -- belief overlay ----------------------------------------------------
+
+    def blit_belief_overlay(self, screen: pygame.Surface, belief,
+                             cam_x: float, cam_y: float) -> None:
+        """Build (cached) a world-pixel-sized RGBA overlay, blit visible region.
+
+        Cache invalidates on belief.version change. Rebuild path:
+          1. compute per-cell RGB by faction-weighted blend
+          2. compute per-cell alpha from max field across factions
+          3. construct 64x48 RGBA surface
+          4. nearest-neighbor scale up to world pixel dims
+        """
+        if belief.version != self._belief_cache_version or self._belief_overlay_world is None:
+            self._belief_overlay_world = self._build_belief_overlay_world(belief)
+            self._belief_cache_version = belief.version
+        screen.blit(
+            self._belief_overlay_world,
+            (0, 0),
+            area=pygame.Rect(int(cam_x), int(cam_y),
+                              self.cfg.viewport_w, self.cfg.viewport_h),
+        )
+
+    def _build_belief_overlay_world(self, belief) -> pygame.Surface:
+        """Construct the cell-resolution overlay then nearest-scale to world px."""
+        gw = belief.grid_w
+        gh = belief.grid_h
+        # Per-faction peaks for alpha normalization. Use a small epsilon floor
+        # so a single citizen still produces a visible blob.
+        peaks = [max(belief.peak(f), 1e-3) for f in range(belief.n_factions)]
+        # Build (gh, gw, 4) uint8 array.
+        rgba = np.zeros((gh, gw, 4), dtype=np.float32)
+        max_mass = np.zeros((gh, gw), dtype=np.float32)
+        total_weight = np.zeros((gh, gw), dtype=np.float32)
+        for f in range(belief.n_factions):
+            grid = belief.grid(f)  # (gh, gw) float32
+            tint = BELIEF_TINT.get(f, (200, 200, 200))
+            # Normalize per faction: 0..1 by peak
+            w = grid / peaks[f]
+            np.clip(w, 0.0, 1.0, out=w)
+            rgba[..., 0] += w * tint[0]
+            rgba[..., 1] += w * tint[1]
+            rgba[..., 2] += w * tint[2]
+            total_weight += w
+            np.maximum(max_mass, w, out=max_mass)
+        # Average the RGB by total weight so a single faction at peak doesn't
+        # double-saturate when factions overlap.
+        nz = total_weight > 0.0
+        rgba[nz, 0] /= total_weight[nz]
+        rgba[nz, 1] /= total_weight[nz]
+        rgba[nz, 2] /= total_weight[nz]
+        # Alpha from the dominant faction's normalized magnitude.
+        # overlay_alpha_max is read off belief.cfg.
+        alpha_max = float(belief.cfg.overlay_alpha_max)
+        rgba[..., 3] = max_mass * alpha_max
+        rgba_u8 = rgba.clip(0, 255).astype(np.uint8)
+        # Build a (gw, gh) Surface from the (gh, gw, 4) array. pygame uses
+        # (width, height) for surfaces but numpy is (rows=h, cols=w).
+        small = pygame.image.frombuffer(
+            rgba_u8.tobytes(), (gw, gh), "RGBA",
+        ).convert_alpha()
+        # Scale up to world pixel resolution.
+        ts = self.cfg.tile_size
+        world_w_px = belief.world_w * ts
+        world_h_px = belief.world_h * ts
+        return pygame.transform.scale(small, (world_w_px, world_h_px))
 
 
 def make_renderer(cfg: RenderConfig) -> Renderer:

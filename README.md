@@ -19,7 +19,8 @@ Local population density determines **how potent any given act of power can be
 at a specific place**. A spell cast in the heart of your capital and the same
 spell cast at the edge of the wilderness produce very different results.
 
-The full design lives in [`Densitas_GDD.md`](Densitas_GDD.md).
+The full design lives in [`Densitas_GDD.md`](Densitas_GDD.md); the belief-field
+math in [`Densitas_belief.md`](Densitas_belief.md).
 
 ## The two gods
 
@@ -54,10 +55,10 @@ The Empty Throne) and a handful of heresies, in
 
 | Milestone | State |
 |-----------|-------|
-| **P0 — Pixel world** (tile map, terrain, camera, debug HUD) | ✅ shipped |
-| P1 — Citizens exist (16-tall pixel sprites, wander, reproduce) | next |
-| P2 — Belief field (density grid, heatmap overlay) | planned |
-| P2.5 — Fog of war | planned |
+| **P0 — Pixel world** (tile map, terrain, camera, debug HUD) | shipped |
+| **P1 — Citizens exist** (16-tall pixel sprites, wander, reproduce) | shipped |
+| **P2 — Belief field** (density grid, heatmap overlay, HUD readout) | shipped |
+| P2.5 — Fog of war | next |
 | P3 — Powers T0–T1 + Religious Relics | planned |
 | P4 — Rival god AI | planned |
 | P5 — Tiers T2–T4 (Tempest, Cataclysm, Apocalypse) | planned |
@@ -73,6 +74,15 @@ backport on 3.10 — both declared in `requirements.txt`).
 ```bash
 pip install -r requirements.txt
 python -m densitas.main
+```
+
+On Windows, the helper scripts work too:
+
+```cmd
+start.cmd          REM activates .venv if present and runs the game
+build.cmd          REM creates .venv, installs deps, runs tests
+build.cmd --exe    REM same, then builds a one-file PyInstaller binary
+build.cmd --clean  REM removes .venv, dist, build, *.spec
 ```
 
 ### A note on pygame-ce
@@ -99,6 +109,7 @@ absent on upstream.
 - **WASD** / **arrow keys** — scroll the map
 - **Mouse to screen edge** — edge-scroll
 - **F3** — toggle debug overlay
+- **B** — toggle belief heatmap overlay
 - **ESC** — quit
 
 ## Configuration
@@ -107,12 +118,49 @@ Every tunable parameter lives in [`config.toml`](config.toml). Edit a value,
 restart the game. The schema is validated by `densitas/config.py`; a missing
 or extra key raises a clear error at startup.
 
-The most useful knobs for P0:
+The most useful knobs:
 
 | Key | Meaning |
 |-----|---------|
 | `world.seed` | Noise seed. Change for a new map. |
-| `world.width`, `world.height` | Map shape in tiles (default 256×192). |
+| `world.width`, `world.height` | Map shape in tiles (default 256x192). |
 | `world.sea_level` … `world.mountain_thresh` | Biome cutoffs on the 0–1 heightmap. |
 | `render.art_style` | `"pixel"` (active) or `"vector"` (planned). |
-| `render.tile_size` | Pixels per tile at native zoom (default 16). 
+| `render.tile_size` | Pixels per tile at native zoom (default 16). |
+| `citizen.initial_population` | How many citizens spawn at world load (default 8). |
+| `citizen.lifespan_mean` | Mean lifespan in sim seconds (default 180). |
+| `citizen.repro_cooldown` | Sim seconds between mate events (default 5). |
+| `belief.grid_w`, `belief.grid_h` | Belief grid resolution (default 64x48). |
+| `belief.amplitude` | Per-citizen splat magnitude. 1.0 -> `total == population`. |
+| `belief.blur_passes` | Box-blur passes (default 2 -> sigma ≈ 1.4 cells). |
+| `belief.overlay_alpha_max` | Peak alpha on the heatmap (0..255, default 180). |
+
+## Project layout
+
+```
+densitas/
+  __init__.py
+  main.py          - entry point + game loop
+  config.py        - dataclasses + TOML loader
+  world.py         - heightmap + tile classification
+  camera.py        - WASD/arrow/edge scroll + clamping
+  render.py        - Renderer ABC + PixelRenderer (tiles, citizens, belief)
+  citizen.py       - Citizen + CitizenManager + tier lookup
+  belief.py        - BeliefField (density grid + query API)
+  hud.py           - bottom-left card: population, belief, tier pips
+tests/
+  test_world.py    - 8 tests
+  test_citizen.py  - 11 tests
+  test_belief.py   - 13 tests
+config.toml        - all tunable parameters
+entry.py           - PyInstaller bootstrap
+start.cmd          - Windows: activate venv + run
+build.cmd          - Windows: venv + deps + tests (+ optional --exe / --clean)
+```
+
+## Tone
+
+The propaganda is the point. Every divine act emits a scripture-log line in
+the god's chosen voice (consecration / doctrinal / ritual-procedural). The
+numbers are for the player who wants to keep score; the rhetoric is for the
+player who wants the god to feel divine.
