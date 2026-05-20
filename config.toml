@@ -1,54 +1,75 @@
-# Densitas — tunable parameters.
-# Edit this file to retune the game. All values affect simulation/render behavior.
-# Defaults are first-pass; balance is for playtest.
+# Densitas - tunable parameters.
 
 [world]
-width = 256                   # map width in tiles
-height = 192                  # map height in tiles
-seed = 42                     # noise seed; change for new map
-sea_level = 0.30              # height < this is water
+width = 256
+height = 192
+seed = 42
+sea_level = 0.30
 beach_thresh = 0.34
 forest_thresh = 0.55
 hill_thresh = 0.70
 mountain_thresh = 0.85
 
 [render]
-art_style = "pixel"           # "pixel" (active) or "vector" (not yet implemented)
-tile_size = 16                # pixels per tile at native zoom
-viewport_w = 1280             # window width
-viewport_h = 720              # window height
+art_style = "pixel"
+tile_size = 16
+viewport_w = 1280
+viewport_h = 720
 fps_target = 60
 
 [camera]
-scroll_speed = 12.0           # tiles per second when scrolling
-edge_scroll_px = 24           # mouse this close to viewport edge triggers scroll
+scroll_speed = 12.0
+edge_scroll_px = 24
 
 [citizen]
-# Population & lifecycle ------------------------------------------------------
-initial_population  = 8       # number spawned at world load
-spawn_radius_tiles  = 5       # spawn within this Chebyshev distance of map center
-spawn_seed          = 0       # XOR'd with world.seed; bump to reshuffle initial positions
-maturity_age        = 8.0     # sim seconds before able to reproduce
-lifespan_mean       = 180.0   # sim seconds (mean of truncated Gaussian)
-lifespan_jitter     = 40.0    # +/- this around the mean (truncated at mean +/- 2*jitter)
-repro_radius        = 2       # Chebyshev tile distance to find a mate
-repro_cooldown      = 5.0     # sim seconds after MATE before eligible again
-mate_duration       = 0.5     # MATE state duration
-dying_duration      = 0.5     # DYING state duration before removal
-# Movement -------------------------------------------------------------------
-wander_period       = 2.0     # mean sim seconds between picking new wander target
-wander_radius       = 6       # tiles around home_x/y for picking targets
-wander_speed        = 1.0     # tiles per sim second
-# Tick rate ------------------------------------------------------------------
-tick_hz             = 5       # simulation ticks per second (logic only; render is fps_target)
+initial_population  = 8
+spawn_radius_tiles  = 5
+spawn_seed          = 0
+maturity_age        = 8.0
+lifespan_mean       = 180.0
+lifespan_jitter     = 40.0
+repro_radius        = 2
+repro_cooldown      = 5.0
+mate_duration       = 0.5
+dying_duration      = 2.0
+wander_period       = 2.0
+wander_radius       = 6
+wander_speed        = 1.0
+tick_hz             = 5
 
 [belief]
-# Belief = 2D scalar field over the world; rebuilt each citizen tick from
-# citizen positions. See Densitas_belief.md for the math.
-grid_w            = 64        # belief cells across (4 world-tiles per cell at default world)
-grid_h            = 48        # belief cells tall
-amplitude         = 1.0       # per-citizen splat magnitude (1.0 -> total == population)
-blur_passes       = 2         # 2 passes of 3-wide box blur ~ Gaussian sigma 1.4 cells
-blur_radius       = 1         # cells (kernel width = 2*radius + 1)
-recompute_hz      = 5         # match citizen tick_hz
-overlay_alpha_max = 180       # 0..255; peak alpha at the densest cell
+grid_w            = 64
+grid_h            = 48
+amplitude         = 1.0
+blur_passes       = 2
+blur_radius       = 1
+recompute_hz      = 5
+overlay_alpha_max = 180
+
+[food]
+# P1.5 - tuned 2026-05-21 for ~2000 citizen equilibrium on the default map.
+# Carrying-capacity math: N_eq = total_regen_per_sec / hunger_rate.
+hunger_rate             = 0.05    # 1/sim_sec -> full->starving in 20 sim sec
+forage_threshold        = 0.40    # hunger above this -> FORAGE
+repro_hunger_threshold  = 0.30    # both partners must be below this to mate
+starve_hunger           = 1.00    # hunger >= this -> DYING (starvation)
+eat_amount              = 0.20    # (unused; bite_size + calorie_per_food drive it)
+eat_duration            = 1.00    # sim sec spent in EATING per visit
+bite_size               = 0.20    # tile food consumed per EATING tick
+calorie_per_food        = 1.00    # 1 unit food reduces hunger by this much
+forage_radius_tiles     = 8
+min_forage_food         = 0.10    # ignore tiles below this (lowered with caps)
+overlay_alpha_max       = 160
+
+[food.biome]
+# Caps and regens scaled so total ~100 food/sec regen, refill in ~150 sim sec.
+forest_initial    = 1.00
+forest_regen      = 0.007
+grass_initial     = 0.80
+grass_regen       = 0.005
+beach_initial     = 0.50
+beach_regen       = 0.003
+hill_initial      = 0.30
+hill_regen        = 0.002
+holy_initial      = 0.15
+holy_regen        = 0.001

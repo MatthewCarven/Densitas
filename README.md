@@ -58,6 +58,7 @@ The Empty Throne) and a handful of heresies, in
 | **P0 — Pixel world** (tile map, terrain, camera, debug HUD) | shipped |
 | **P1 — Citizens exist** (16-tall pixel sprites, wander, reproduce) | shipped |
 | **P2 — Belief field** (density grid, heatmap overlay, HUD readout) | shipped |
+| **P1.5 — Food, forage & hunger** (tile food regen, carrying capacity) | shipped |
 | P2.5 — Fog of war | next |
 | P3 — Powers T0–T1 + Religious Relics | planned |
 | P4 — Rival god AI | planned |
@@ -110,6 +111,7 @@ absent on upstream.
 - **Mouse to screen edge** — edge-scroll
 - **F3** — toggle debug overlay
 - **B** — toggle belief heatmap overlay
+- **F** — toggle food heatmap overlay
 - **ESC** — quit
 
 ## Configuration
@@ -134,6 +136,9 @@ The most useful knobs:
 | `belief.amplitude` | Per-citizen splat magnitude. 1.0 -> `total == population`. |
 | `belief.blur_passes` | Box-blur passes (default 2 -> sigma ≈ 1.4 cells). |
 | `belief.overlay_alpha_max` | Peak alpha on the heatmap (0..255, default 180). |
+| `food.hunger_rate` | Per-sim-sec hunger accrual. Default 0.05 -> 20s full->starving. |
+| `food.repro_hunger_threshold` | Both mates must be below this (0..1) to reproduce. Default 0.30. |
+| `food.biome.*_regen` | Per-biome food regeneration rate. Drives carrying capacity. |
 
 ## Project layout
 
@@ -147,11 +152,13 @@ densitas/
   render.py        - Renderer ABC + PixelRenderer (tiles, citizens, belief)
   citizen.py       - Citizen + CitizenManager + tier lookup
   belief.py        - BeliefField (density grid + query API)
-  hud.py           - bottom-left card: population, belief, tier pips
+  food.py          - FoodField (per-tile food + regen + forage search)
+  hud.py           - bottom-left card: population, belief, tier pips, hunger bar
 tests/
   test_world.py    - 8 tests
   test_citizen.py  - 11 tests
-  test_belief.py   - 13 tests
+  test_belief.py   - 15 tests
+  test_food.py     - 20 tests
 config.toml        - all tunable parameters
 entry.py           - PyInstaller bootstrap
 start.cmd          - Windows: activate venv + run

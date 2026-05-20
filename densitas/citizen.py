@@ -1,27 +1,33 @@
-"""Citizen — autonomous inhabitants of the world.
+"""Citizen - autonomous inhabitants of the world.
 
-Implements the state machine described in `Densitas_citizens.md` (P1).
+Implements the state machine described in `Densitas_citizens.md` (P1) and
+extended for food in `Densitas_food.md` (P1.5).
 
 Design notes:
 - Citizens are NEVER directly selected by the player.
-- All behaviour is local: wander, age, pair off, die.
-- 5 Hz simulation tick (logic). Rendering runs at fps_target (60 Hz)
-  but reads citizen positions directly — interpolation is a polish task.
+- All behaviour is local: wander, age, eat, pair off, die.
+- 5 Hz simulation tick (logic). Rendering runs at fps_target (60 Hz).
 - No pathfinding. Movement projects onto walkable tiles; if a step
   crosses an unwalkable tile, slide along the walkable axis or stay.
 
-The belief field (P2) will read citizen positions; this module does
-not depend on belief.
+P1.5 brings carrying capacity into the simulation. Citizens get hungry,
+forage from food-bearing tiles, eat in place, and starve when food runs
+out. Reproduction is gated on hunger so a famine self-throttles the
+population long before exponential growth swamps the map.
 """
 from __future__ import annotations
 import enum
 import math
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Iterable, Optional, TYPE_CHECKING
 import numpy as np
 
 from .world import World, Tile
-from .config import CitizenConfig
+from .config import CitizenConfig, FoodConfig
+
+if TYPE_CHECKING:
+    from .food import FoodField
+
 
 # Tiles a citizen can stand on / walk through.
 WALKABLE_TILES: frozenset[int] = frozenset({
@@ -29,7 +35,6 @@ WALKABLE_TILES: frozenset[int] = frozenset({
 })
 
 # Tier thresholds, by population. Single source of truth.
-# (name, min_population)
 TIERS: tuple[tuple[str, int], ...] = (
     ("T0 Whisper",    1),
     ("T1 Blessing",   10),
@@ -55,14 +60,13 @@ def tier_for(population: int) -> tuple[str, int]:
 
 
 class CitizenState(enum.IntEnum):
-    """States in the citizen FSM. P1 uses IDLE/WANDER/MATE/DYING.
-    The rest are placeholders so save-files stay forward-compatible.
+    """States in the citizen FSM. P1.5 activates FORAGE and EATING.
+    SLEEP/FLEE/CONVERTED remain placeholders for later milestones.
     """
     IDLE      = 0
     WANDER    = 1
     MATE      = 2
     DYING     = 3
-    # Placeholders (not dispatched in P1):
     FORAGE    = 4
     EATING    = 5
     SLEEP     = 6
@@ -93,22 +97,24 @@ class Citizen:
     home_y:    float
     target_x:  float
     target_y:  float
-    state_timer: float = 0.0  # time remaining in transient states (MATE, DYING)
+    state_timer: float = 0.0  # time remaining in transient states
+    # --- P1.5 additions ---
+    hunger:    float = 0.0    # 0.0 fed -> 1.0 starving
+    food_carried: int = 0     # P1.5 unused; reserved for future inventory tier
 
 
 class CitizenManager:
     """Owns the population and advances the simulation by sim-seconds.
 
-    Use:
-        cm = CitizenManager(cfg.citizen, world, world_seed=cfg.world.seed)
-        # ... in main loop, accumulator-style:
-        while accumulator >= tick_dt:
-            cm.tick(tick_dt, world)
-            accumulator -= tick_dt
+    `tick(dt, world, food)` now takes the food field too. Passing `None`
+    is permitted for backward-compat tests (skips hunger/forage/eating
+    bookkeeping; the FSM falls back to P1 behaviour).
     """
 
-    def __init__(self, cfg: CitizenConfig, world: World, world_seed: int):
+    def __init__(self, cfg: CitizenConfig, world: World, world_seed: int,
+                 food_cfg: Optional[FoodConfig] = None):
         self.cfg = cfg
+        self.food_cfg = food_cfg
         self._rng = np.random.default_rng(world_seed ^ cfg.spawn_seed)
         self._next_id: int = 0
         self.citizens: list[Citizen] = []
@@ -123,11 +129,47 @@ class CitizenManager:
             if c.faction == faction and c.state != CitizenState.DYING
         )
 
-    def tick(self, dt: float, world: World) -> None:
-        """Advance the sim by `dt` sim-seconds. Single tick at 5 Hz = 0.2s."""
+    def hunger_stats(self, faction: int = 0) -> tuple[int, int, int, float]:
+        """Return (fed, hungry, starving, avg_hunger) counts for `faction`.
+
+          * fed      = hunger <  repro_hunger_threshold (default 0.3)
+          * hungry   = repro_hunger_threshold <= hunger < starve_hunger * 0.8
+          * starving = hunger >= starve_hunger * 0.8
+
+        If no food_cfg is set, returns zeros (P1 backward-compat).
+        """
+        if self.food_cfg is None:
+            return (0, 0, 0, 0.0)
+        fc = self.food_cfg
+        fed = hungry = starving = 0
+        total = 0
+        sum_h = 0.0
+        starve_warn = fc.starve_hunger * 0.8
+        for c in self.citizens:
+            if c.faction != faction or c.state == CitizenState.DYING:
+                continue
+            total += 1
+            sum_h += c.hunger
+            if c.hunger < fc.repro_hunger_threshold:
+                fed += 1
+            elif c.hunger >= starve_warn:
+                starving += 1
+            else:
+                hungry += 1
+        avg = sum_h / total if total else 0.0
+        return (fed, hungry, starving, avg)
+
+    def tick(self, dt: float, world: World,
+              food: "FoodField | None" = None) -> None:
+        """Advance the sim by `dt` sim-seconds. Single tick at 5 Hz = 0.2s.
+
+        `food` is optional (P1 backward-compat): when None, hunger and
+        forage/eating are disabled and the manager behaves as in P1.
+        """
         new_citizens: list[Citizen] = []
         dead_idx: list[int] = []
         cfg = self.cfg
+        fc = self.food_cfg
 
         # Pre-build a coarse spatial index for mate-finding.
         spatial: dict[tuple[int, int], list[int]] = {}
@@ -140,7 +182,20 @@ class CitizenManager:
             if c.repro_cd > 0.0:
                 c.repro_cd = max(0.0, c.repro_cd - dt)
 
-            # Lifespan check — preempts everything except already-dying.
+            # Hunger accrual (everywhere except DYING, where the body shuts down).
+            if fc is not None and food is not None and c.state != CitizenState.DYING:
+                c.hunger += fc.hunger_rate * dt
+                if c.hunger > 1.0:
+                    c.hunger = 1.0
+
+            # Starvation: hunger maxed -> DYING.
+            if fc is not None and food is not None:
+                if c.state != CitizenState.DYING and c.hunger >= fc.starve_hunger:
+                    c.state = CitizenState.DYING
+                    c.state_timer = cfg.dying_duration
+                    continue
+
+            # Lifespan check - preempts everything except already-dying.
             if c.state != CitizenState.DYING and c.age >= c.lifespan:
                 c.state = CitizenState.DYING
                 c.state_timer = cfg.dying_duration
@@ -158,8 +213,80 @@ class CitizenManager:
                     c.state = CitizenState.IDLE
                 continue
 
+            if c.state == CitizenState.EATING:
+                # Consume one bite from the tile we're on. If empty, hunt for another.
+                if fc is not None and food is not None:
+                    take = food.consume(int(c.x), int(c.y), fc.bite_size)
+                    if take > 0.0:
+                        c.hunger -= take * fc.calorie_per_food
+                        if c.hunger < 0.0:
+                            c.hunger = 0.0
+                        c.state_timer -= dt
+                        if c.state_timer <= 0.0 or c.hunger <= 0.0:
+                            c.state = CitizenState.IDLE
+                    else:
+                        # Tile exhausted under us — go forage somewhere else.
+                        c.state = CitizenState.FORAGE
+                        c.state_timer = 0.0
+                else:
+                    c.state = CitizenState.IDLE
+                continue
+
+            if c.state == CitizenState.FORAGE:
+                # Are we already on a food tile? Eat.
+                if fc is not None and food is not None:
+                    if food.query(int(c.x), int(c.y)) >= fc.min_forage_food:
+                        c.state = CitizenState.EATING
+                        c.state_timer = fc.eat_duration
+                        continue
+                    # Otherwise step toward our forage target.
+                    self._step_toward(c, c.target_x, c.target_y, dt, world)
+                    dx = c.target_x - c.x
+                    dy = c.target_y - c.y
+                    if dx * dx + dy * dy < 0.25:
+                        # Arrived; re-evaluate the tile.
+                        if food.query(int(c.x), int(c.y)) >= fc.min_forage_food:
+                            c.state = CitizenState.EATING
+                            c.state_timer = fc.eat_duration
+                        else:
+                            # Target tile got eaten while we walked; look again.
+                            spot = food.find_nearest(
+                                int(c.x), int(c.y),
+                                fc.forage_radius_tiles, fc.min_forage_food,
+                            )
+                            if spot is not None:
+                                c.target_x = float(spot[0]) + 0.5
+                                c.target_y = float(spot[1]) + 0.5
+                            else:
+                                # Nothing nearby - fall back to a regular wander
+                                # outward. We keep the hunger and starve if we
+                                # can't find food in time.
+                                c.state = CitizenState.WANDER
+                                tx, ty = self._pick_wander_target(c, world)
+                                c.target_x = tx
+                                c.target_y = ty
+                else:
+                    c.state = CitizenState.IDLE
+                continue
+
+            # IDLE / WANDER are the only remaining states.
+            # First: should we be foraging instead?
+            if fc is not None and food is not None and c.hunger >= fc.forage_threshold:
+                spot = food.find_nearest(
+                    int(c.x), int(c.y),
+                    fc.forage_radius_tiles, fc.min_forage_food,
+                )
+                if spot is not None:
+                    c.target_x = float(spot[0]) + 0.5
+                    c.target_y = float(spot[1]) + 0.5
+                    c.state = CitizenState.FORAGE
+                    continue
+                # else: no food in range, fall through to wander (migration)
+
             if c.state == CitizenState.IDLE:
-                if (c.age >= cfg.maturity_age and c.repro_cd == 0.0):
+                # Mating eligibility: now also gated on hunger.
+                if (c.age >= cfg.maturity_age and c.repro_cd == 0.0
+                        and self._is_repro_fed(c)):
                     mate_idx = self._find_mate(i, c, spatial)
                     if mate_idx is not None:
                         mate = self.citizens[mate_idx]
@@ -169,8 +296,10 @@ class CitizenManager:
                         mate.state = CitizenState.MATE
                         mate.state_timer = cfg.mate_duration
                         mate.repro_cd = cfg.repro_cooldown
-                        # Only the lower-id partner spawns the child
-                        # so we don't double-up.
+                        # Carrying the next generation costs a bit of hunger.
+                        if fc is not None and food is not None:
+                            c.hunger    = min(1.0, c.hunger    + fc.repro_hunger_threshold * 0.5)
+                            mate.hunger = min(1.0, mate.hunger + fc.repro_hunger_threshold * 0.5)
                         if c.id < mate.id:
                             child = self._spawn_child(c, world)
                             if child is not None:
@@ -204,6 +333,13 @@ class CitizenManager:
 
     # -- internals ----------------------------------------------------------
 
+    def _is_repro_fed(self, c: Citizen) -> bool:
+        """Is this citizen well-fed enough to consider mating?
+        Returns True when food_cfg is unset (P1 mode)."""
+        if self.food_cfg is None:
+            return True
+        return c.hunger < self.food_cfg.repro_hunger_threshold
+
     def _spawn_initial(self, world: World) -> None:
         cfg = self.cfg
         cx = world.width // 2
@@ -223,17 +359,6 @@ class CitizenManager:
             spawned += 1
 
     def _initial_age(self) -> float:
-        """Initial age — spread but strictly pre-mature.
-
-        Initial citizens all start under maturity_age so reproduction is
-        not instant on world load (gives the player a moment to look
-        around). They mature into reproduction over the first
-        ``maturity_age`` sim seconds.
-
-        Bounded by half of ``lifespan_mean`` as well, so config combinations
-        with absurdly large maturity don't accidentally spawn already-
-        dying citizens.
-        """
         cfg = self.cfg
         upper = min(cfg.maturity_age * 0.95, cfg.lifespan_mean * 0.5)
         upper = max(0.0, upper)
@@ -251,6 +376,10 @@ class CitizenManager:
                 return v
         return cfg.lifespan_mean
 
+    def _initial_hunger(self) -> float:
+        """Spread initial hunger so a founding generation doesn't synchronise."""
+        return float(self._rng.uniform(0.0, 0.2))
+
     def _make_citizen(self, faction: int, x: float, y: float, age: float = 0.0) -> Citizen:
         cid = self._next_id
         self._next_id += 1
@@ -266,6 +395,8 @@ class CitizenManager:
             home_x=x, home_y=y,
             target_x=x, target_y=y,
             state_timer=0.0,
+            hunger=self._initial_hunger(),
+            food_carried=0,
         )
 
     def _pick_wander_target(self, c: Citizen, world: World) -> tuple[float, float]:
@@ -300,8 +431,6 @@ class CitizenManager:
                 ny2 = c.y + step_y
                 if _walkable(world, int(c.x), int(ny2)):
                     c.y = ny2
-                # else: blocked — stay put
-        # Facing follows step direction.
         if abs(step_x) > abs(step_y):
             c.facing = Facing.EAST if step_x > 0 else Facing.WEST
         elif abs(step_y) > 0:
@@ -309,7 +438,8 @@ class CitizenManager:
 
     def _find_mate(self, my_idx: int, me: Citizen,
                     spatial: dict[tuple[int, int], list[int]]) -> int | None:
-        """Find a nearby same-faction mature mate. Chebyshev distance."""
+        """Find a nearby same-faction mature mate. Chebyshev distance.
+        P1.5: partner must also be `_is_repro_fed`."""
         cfg = self.cfg
         r = cfg.repro_radius
         my_tx, my_ty = int(me.x), int(me.y)
@@ -330,11 +460,12 @@ class CitizenManager:
                         continue
                     if other.repro_cd > 0.0:
                         continue
+                    if not self._is_repro_fed(other):
+                        continue
                     return j
         return None
 
     def _spawn_child(self, parent: Citizen, world: World) -> Citizen | None:
-        """Spawn a child near `parent`. Returns None if no walkable tile found."""
         cfg = self.cfg
         r = cfg.repro_radius
         for _ in range(8):
@@ -349,7 +480,6 @@ class CitizenManager:
 
 
 def _walkable(world: World, x: int, y: int) -> bool:
-    """True if (x, y) is in-bounds and the tile is walkable."""
     if x < 0 or y < 0 or x >= world.width or y >= world.height:
         return False
     return int(world.tiles[y, x]) in WALKABLE_TILES

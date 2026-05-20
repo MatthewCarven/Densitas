@@ -76,12 +76,43 @@ class BeliefConfig:
 
 
 @dataclass(frozen=True)
+class FoodBiomeConfig:
+    forest_initial: float
+    forest_regen: float
+    grass_initial: float
+    grass_regen: float
+    beach_initial: float
+    beach_regen: float
+    hill_initial: float
+    hill_regen: float
+    holy_initial: float
+    holy_regen: float
+
+
+@dataclass(frozen=True)
+class FoodConfig:
+    hunger_rate: float
+    forage_threshold: float
+    repro_hunger_threshold: float
+    starve_hunger: float
+    eat_amount: float
+    eat_duration: float
+    bite_size: float
+    calorie_per_food: float
+    forage_radius_tiles: int
+    min_forage_food: float
+    overlay_alpha_max: int
+    biome: FoodBiomeConfig
+
+
+@dataclass(frozen=True)
 class Config:
     world: WorldConfig
     render: RenderConfig
     camera: CameraConfig
     citizen: CitizenConfig
     belief: BeliefConfig
+    food: FoodConfig
 
 
 def load(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
@@ -89,10 +120,15 @@ def load(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
     p = Path(path)
     with open(p, "rb") as f:
         raw = tomllib.load(f)
+
+    food_raw = dict(raw["food"])
+    biome_raw = food_raw.pop("biome")
+
     return Config(
         world=WorldConfig(**raw["world"]),
         render=RenderConfig(**raw["render"]),
         camera=CameraConfig(**raw["camera"]),
         citizen=CitizenConfig(**raw["citizen"]),
         belief=BeliefConfig(**raw["belief"]),
+        food=FoodConfig(biome=FoodBiomeConfig(**biome_raw), **food_raw),
     )

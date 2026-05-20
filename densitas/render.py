@@ -1,9 +1,9 @@
-"""Render — abstract Renderer + PixelRenderer implementation.
+"""Render - abstract Renderer + PixelRenderer implementation.
 
 The Renderer interface is intentionally narrow so a future VectorRenderer
 can be dropped in without touching world/camera/main code. Implementations
 share the same `build_world_surface`, `blit_viewport`, `blit_citizens`,
-and `blit_belief_overlay` contract.
+`blit_belief_overlay`, and `blit_food_overlay` contract.
 """
 from __future__ import annotations
 import abc
@@ -15,8 +15,6 @@ from .config import RenderConfig
 from .citizen import Citizen, CitizenState, Facing
 
 
-# Pixel-art tile palette. Each tile has (base, detail, accent) colors.
-# Procedural tile sprites are painted at startup from these triples.
 PIXEL_PALETTE: dict[Tile, tuple[tuple[int, int, int],
                                 tuple[int, int, int],
                                 tuple[int, int, int]]] = {
@@ -31,35 +29,25 @@ PIXEL_PALETTE: dict[Tile, tuple[tuple[int, int, int],
     Tile.HOLY:     ((240, 230, 180), (255, 250, 210), (255, 255, 230)),
 }
 
-# Citizen sprite palette per faction.
-# (skin, robe, accent, outline) - outline doubles as foot shadow.
 CITIZEN_PALETTE: dict[int, tuple[tuple[int, int, int], tuple[int, int, int],
                                   tuple[int, int, int], tuple[int, int, int]]] = {
-    # Faction 0 = Open Eye (player). Parchment robe + cyan accent.
     0: ((230, 200, 170), (220, 210, 180), (90, 200, 220), (30, 28, 30)),
-    # Faction 1 = Maw (rival). Bone robe + blood accent.
     1: ((210, 190, 170), (190, 180, 170), (160, 30, 30), (30, 28, 30)),
 }
 
-CITIZEN_W = 8    # sprite width in pixels
-CITIZEN_H = 16   # sprite height in pixels
+CITIZEN_W = 8
+CITIZEN_H = 16
 
-# Belief overlay tints per faction (R,G,B). Alpha is computed per cell from
-# field magnitude.
 BELIEF_TINT: dict[int, tuple[int, int, int]] = {
-    0: (90, 200, 220),   # Open Eye - cyan
-    1: (220, 60, 60),    # Maw - red
+    0: (90, 200, 220),
+    1: (220, 60, 60),
 }
+
+# Food overlay: a single yellow-green tint scaled by food/global_max.
+FOOD_TINT: tuple[int, int, int] = (110, 200, 80)
 
 
 class Renderer(abc.ABC):
-    """Abstract renderer.
-
-    Implementations:
-      PixelRenderer  - active.
-      VectorRenderer - todo. Subclass and add a branch to make_renderer().
-    """
-
     def __init__(self, cfg: RenderConfig):
         self.cfg = cfg
 
@@ -68,13 +56,10 @@ class Renderer(abc.ABC):
         return self.cfg.tile_size
 
     @abc.abstractmethod
-    def build_world_surface(self, world: World) -> pygame.Surface:
-        """Pre-render the entire world to a Surface. Called once at world load."""
-        ...
+    def build_world_surface(self, world: World) -> pygame.Surface: ...
 
     def blit_viewport(self, screen: pygame.Surface, world_surface: pygame.Surface,
                        cam_x: float, cam_y: float) -> None:
-        """Blit the visible portion of the world surface to the screen."""
         screen.blit(
             world_surface,
             (0, 0),
@@ -84,41 +69,30 @@ class Renderer(abc.ABC):
 
     @abc.abstractmethod
     def blit_citizens(self, screen: pygame.Surface, citizens: Iterable[Citizen],
-                       cam_x: float, cam_y: float, sim_time: float = 0.0) -> None:
-        """Blit citizens on top of the already-drawn viewport.
-        `sim_time` (sim seconds) drives walk-frame selection.
-        """
-        ...
+                       cam_x: float, cam_y: float, sim_time: float = 0.0) -> None: ...
 
     @abc.abstractmethod
     def blit_belief_overlay(self, screen: pygame.Surface, belief,
-                             cam_x: float, cam_y: float) -> None:
-        """Blit a heatmap of the belief field over the viewport.
-        `belief` is a BeliefField. Implementations cache by belief.version.
-        """
-        ...
+                             cam_x: float, cam_y: float) -> None: ...
+
+    @abc.abstractmethod
+    def blit_food_overlay(self, screen: pygame.Surface, food,
+                           cam_x: float, cam_y: float) -> None: ...
 
 
 class PixelRenderer(Renderer):
-    """Pixel-art renderer.
-
-    Each tile type has N procedurally-textured variants.
-    Each citizen faction has (Facing x 2 walk frames + 1 idle) sprites.
-    """
-
     def __init__(self, cfg: RenderConfig, rng_seed: int = 0,
                  variants_per_tile: int = 4):
         super().__init__(cfg)
         self._rng = np.random.default_rng(rng_seed)
         self._tile_sprites: dict[Tile, list[pygame.Surface]] = {}
         self._build_tile_sprites(variants_per_tile)
-        # citizen_sprites[(faction, facing, frame)] = Surface
-        # frame: 0 = idle, 1 = walk-A, 2 = walk-B
         self._citizen_sprites: dict[tuple[int, int, int], pygame.Surface] = {}
         self._build_citizen_sprites()
-        # Belief overlay cache: rebuilt on belief.version change.
         self._belief_cache_version: int = -1
         self._belief_overlay_world: pygame.Surface | None = None
+        self._food_cache_version: int = -1
+        self._food_overlay_world: pygame.Surface | None = None
 
     # -- tile sprites -------------------------------------------------------
 
@@ -170,7 +144,6 @@ class PixelRenderer(Renderer):
             if 0 <= x < CITIZEN_W and 0 <= y < CITIZEN_H:
                 surf.set_at((x, y), c)
 
-        # --- Head (rows 0-3) ---
         for hy in range(0, 4):
             for hx in range(2, 6):
                 px(hx, hy, skin)
@@ -189,7 +162,6 @@ class PixelRenderer(Renderer):
         elif facing == Facing.WEST:
             px(2, 2, outline); px(3, 2, outline)
 
-        # --- Torso (rows 4-9) ---
         for ty in range(4, 10):
             for tx in range(1, 7):
                 px(tx, ty, robe)
@@ -212,7 +184,6 @@ class PixelRenderer(Renderer):
                 px(0, ay, robe)
             px(0, 9, skin)
 
-        # --- Legs (rows 10-13) ---
         if frame == 0:
             for ly in range(10, 14):
                 for lx in range(2, 4):
@@ -240,8 +211,6 @@ class PixelRenderer(Renderer):
 
         return surf
 
-    # -- citizen blit -------------------------------------------------------
-
     def blit_citizens(self, screen: pygame.Surface, citizens: Iterable[Citizen],
                        cam_x: float, cam_y: float, sim_time: float = 0.0) -> None:
         ts = self.cfg.tile_size
@@ -250,12 +219,13 @@ class PixelRenderer(Renderer):
         cy_int = int(cam_y)
         sprites = self._citizen_sprites
         blit = screen.blit
+        walk_states = (CitizenState.WANDER, CitizenState.FORAGE)
         for c in citizens:
             wx = int(c.x * ts) - cx_int + (ts - CITIZEN_W) // 2
             wy = int(c.y * ts) - cy_int + (ts - CITIZEN_H)
             if wx + CITIZEN_W < 0 or wy + CITIZEN_H < 0 or wx >= vw or wy >= vh:
                 continue
-            if c.state == CitizenState.WANDER:
+            if c.state in walk_states:
                 frame = 1 if (int(sim_time / 0.25) + c.id) & 1 else 2
             else:
                 frame = 0
@@ -268,14 +238,6 @@ class PixelRenderer(Renderer):
 
     def blit_belief_overlay(self, screen: pygame.Surface, belief,
                              cam_x: float, cam_y: float) -> None:
-        """Build (cached) a world-pixel-sized RGBA overlay, blit visible region.
-
-        Cache invalidates on belief.version change. Rebuild path:
-          1. compute per-cell RGB by faction-weighted blend
-          2. compute per-cell alpha from max field across factions
-          3. construct 64x48 RGBA surface
-          4. nearest-neighbor scale up to world pixel dims
-        """
         if belief.version != self._belief_cache_version or self._belief_overlay_world is None:
             self._belief_overlay_world = self._build_belief_overlay_world(belief)
             self._belief_cache_version = belief.version
@@ -287,20 +249,15 @@ class PixelRenderer(Renderer):
         )
 
     def _build_belief_overlay_world(self, belief) -> pygame.Surface:
-        """Construct the cell-resolution overlay then nearest-scale to world px."""
         gw = belief.grid_w
         gh = belief.grid_h
-        # Per-faction peaks for alpha normalization. Use a small epsilon floor
-        # so a single citizen still produces a visible blob.
         peaks = [max(belief.peak(f), 1e-3) for f in range(belief.n_factions)]
-        # Build (gh, gw, 4) uint8 array.
         rgba = np.zeros((gh, gw, 4), dtype=np.float32)
         max_mass = np.zeros((gh, gw), dtype=np.float32)
         total_weight = np.zeros((gh, gw), dtype=np.float32)
         for f in range(belief.n_factions):
-            grid = belief.grid(f)  # (gh, gw) float32
+            grid = belief.grid(f)
             tint = BELIEF_TINT.get(f, (200, 200, 200))
-            # Normalize per faction: 0..1 by peak
             w = grid / peaks[f]
             np.clip(w, 0.0, 1.0, out=w)
             rgba[..., 0] += w * tint[0]
@@ -308,31 +265,61 @@ class PixelRenderer(Renderer):
             rgba[..., 2] += w * tint[2]
             total_weight += w
             np.maximum(max_mass, w, out=max_mass)
-        # Average the RGB by total weight so a single faction at peak doesn't
-        # double-saturate when factions overlap.
         nz = total_weight > 0.0
         rgba[nz, 0] /= total_weight[nz]
         rgba[nz, 1] /= total_weight[nz]
         rgba[nz, 2] /= total_weight[nz]
-        # Alpha from the dominant faction's normalized magnitude.
-        # overlay_alpha_max is read off belief.cfg.
         alpha_max = float(belief.cfg.overlay_alpha_max)
         rgba[..., 3] = max_mass * alpha_max
         rgba_u8 = rgba.clip(0, 255).astype(np.uint8)
-        # Build a (gw, gh) Surface from the (gh, gw, 4) array. pygame uses
-        # (width, height) for surfaces but numpy is (rows=h, cols=w).
         small = pygame.image.frombuffer(
             rgba_u8.tobytes(), (gw, gh), "RGBA",
         ).convert_alpha()
-        # Scale up to world pixel resolution.
         ts = self.cfg.tile_size
-        world_w_px = belief.world_w * ts
-        world_h_px = belief.world_h * ts
-        return pygame.transform.scale(small, (world_w_px, world_h_px))
+        return pygame.transform.scale(small,
+                                       (belief.world_w * ts, belief.world_h * ts))
+
+    # -- food overlay ------------------------------------------------------
+
+    def blit_food_overlay(self, screen: pygame.Surface, food,
+                           cam_x: float, cam_y: float) -> None:
+        """Greenish heatmap of `food.grid()`, cached by `food.version`.
+
+        Source resolution is world-tile native (e.g. 256x192). One per-tile
+        cell -> tile_size pixels in the upscaled overlay.
+        """
+        if food.version != self._food_cache_version or self._food_overlay_world is None:
+            self._food_overlay_world = self._build_food_overlay_world(food)
+            self._food_cache_version = food.version
+        screen.blit(
+            self._food_overlay_world,
+            (0, 0),
+            area=pygame.Rect(int(cam_x), int(cam_y),
+                              self.cfg.viewport_w, self.cfg.viewport_h),
+        )
+
+    def _build_food_overlay_world(self, food) -> pygame.Surface:
+        grid = food.grid()  # (h, w) float32
+        # Normalize by the global cap maximum so tiles at full carry max alpha.
+        cap_max = float(max(food.cap.max(), 1e-3))
+        w = (grid / cap_max).clip(0.0, 1.0).astype(np.float32)
+        h, gw = grid.shape
+        rgba = np.zeros((h, gw, 4), dtype=np.float32)
+        tint = FOOD_TINT
+        rgba[..., 0] = w * tint[0]
+        rgba[..., 1] = w * tint[1]
+        rgba[..., 2] = w * tint[2]
+        rgba[..., 3] = w * float(food.cfg.overlay_alpha_max)
+        rgba_u8 = rgba.clip(0, 255).astype(np.uint8)
+        small = pygame.image.frombuffer(
+            rgba_u8.tobytes(), (gw, h), "RGBA",
+        ).convert_alpha()
+        ts = self.cfg.tile_size
+        return pygame.transform.scale(small,
+                                       (food.world_w * ts, food.world_h * ts))
 
 
 def make_renderer(cfg: RenderConfig) -> Renderer:
-    """Factory dispatching on cfg.art_style."""
     if cfg.art_style == "pixel":
         return PixelRenderer(cfg)
     if cfg.art_style == "vector":
