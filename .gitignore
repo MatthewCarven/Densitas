@@ -43,6 +43,11 @@ desktop.ini
 ehthumbs.db
 ehthumbs_vista.db
 
+# --- Densitas build outputs ---
+# Produced by build.cmd --exe. PyInstaller emits both build\ and dist\
+# (already covered by the Python section above) plus a *.spec file.
+*.spec
+
 # --- Densitas-specific ---
 # Local config overrides (if we ever add one)
 config.local.toml
