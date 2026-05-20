@@ -22,3 +22,22 @@ fps_target = 60
 [camera]
 scroll_speed = 12.0           # tiles per second when scrolling
 edge_scroll_px = 24           # mouse this close to viewport edge triggers scroll
+
+[citizen]
+# Population & lifecycle ------------------------------------------------------
+initial_population  = 8       # number spawned at world load
+spawn_radius_tiles  = 5       # spawn within this Chebyshev distance of map center
+spawn_seed          = 0       # XOR'd with world.seed; bump to reshuffle initial positions
+maturity_age        = 8.0     # sim seconds before able to reproduce
+lifespan_mean       = 180.0   # sim seconds (mean of truncated Gaussian)
+lifespan_jitter     = 40.0    # ± this around the mean (truncated at mean ± 2·jitter)
+repro_radius        = 2       # Chebyshev tile distance to find a mate
+repro_cooldown      = 5.0     # sim seconds after MATE before eligible again
+mate_duration       = 0.5     # MATE state duration
+dying_duration      = 0.5     # DYING state duration before removal
+# Movement -------------------------------------------------------------------
+wander_period       = 2.0     # mean sim seconds between picking new wander target
+wander_radius       = 6       # tiles around home_x/y for picking targets
+wander_speed        = 1.0     # tiles per sim second
+# Tick rate ------------------------------------------------------------------
+tick_hz             = 5       # simulation ticks per second (logic only; render is fps_target)

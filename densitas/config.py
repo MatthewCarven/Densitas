@@ -44,10 +44,32 @@ class CameraConfig:
 
 
 @dataclass(frozen=True)
+class CitizenConfig:
+    # Population & lifecycle
+    initial_population: int
+    spawn_radius_tiles: int
+    spawn_seed: int
+    maturity_age: float
+    lifespan_mean: float
+    lifespan_jitter: float
+    repro_radius: int
+    repro_cooldown: float
+    mate_duration: float
+    dying_duration: float
+    # Movement
+    wander_period: float
+    wander_radius: int
+    wander_speed: float
+    # Tick
+    tick_hz: int
+
+
+@dataclass(frozen=True)
 class Config:
     world: WorldConfig
     render: RenderConfig
     camera: CameraConfig
+    citizen: CitizenConfig
 
 
 def load(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
@@ -59,4 +81,5 @@ def load(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
         world=WorldConfig(**raw["world"]),
         render=RenderConfig(**raw["render"]),
         camera=CameraConfig(**raw["camera"]),
+        citizen=CitizenConfig(**raw["citizen"]),
     )
