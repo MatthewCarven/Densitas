@@ -1,0 +1,4 @@
+pygame-ce>=2.5
+numpy>=1.26
+# tomli is only needed on Python < 3.11 (3.11+ has tomllib in stdlib)
+tomli>=2.0; python_version < "3.11"

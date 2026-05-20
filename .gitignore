@@ -1,0 +1,59 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+pip-log.txt
+pip-delete-this-directory.txt
+
+# --- Virtualenvs ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Test / coverage ---
+.pytest_cache/
+.coverage
+.coverage.*
+.tox/
+htmlcov/
+
+# --- Type checkers / linters ---
+.mypy_cache/
+.ruff_cache/
+.pyright/
+
+# --- IDE / editor ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# --- OS junk ---
+Thumbs.db
+desktop.ini
+ehthumbs.db
+ehthumbs_vista.db
+
+# --- Densitas-specific ---
+# Local config overrides (if we ever add one)
+config.local.toml
+# Save files / playtest captures (when those exist)
+saves/
+playtest/
+*.densitas-save
+
+# --- Generated thumbnails / debug renders ---
+# These are produced by headless smoke tests during development. Keep the
+# checked-in glyph HTML; ignore one-off PNGs.
+p0_world_thumb.png
+p0_viewport.png
+*.debug.png

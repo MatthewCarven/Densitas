@@ -1,0 +1,24 @@
+# Densitas — tunable parameters.
+# Edit this file to retune the game. All values affect simulation/render behavior.
+# Defaults are first-pass; balance is for playtest.
+
+[world]
+width = 256                   # map width in tiles
+height = 192                  # map height in tiles
+seed = 42                     # noise seed; change for new map
+sea_level = 0.30              # height < this is water
+beach_thresh = 0.34
+forest_thresh = 0.55
+hill_thresh = 0.70
+mountain_thresh = 0.85
+
+[render]
+art_style = "pixel"           # "pixel" (active) or "vector" (not yet implemented)
+tile_size = 16                # pixels per tile at native zoom
+viewport_w = 1280             # window width
+viewport_h = 720              # window height
+fps_target = 60
+
+[camera]
+scroll_speed = 12.0           # tiles per second when scrolling
+edge_scroll_px = 24           # mouse this close to viewport edge triggers scroll
