@@ -1,3 +1,54 @@
+## 2026-05-21 (P1 polish ship) — Walk cycle, DYING fade, EATING munch
+
+The "open from P1" polish bucket cleared. Three small visual improvements; each one shows up immediately during playtest without changing any game mechanic.
+
+**What landed:**
+
+- `densitas/citizen.py` — `Citizen.dying_fade: float = 1.0` field. Updated in the DYING tick branch: `c.dying_fade = max(0.0, c.state_timer / cfg.dying_duration)`. Frozen at 1.0 for all non-DYING citizens. No transition-site changes needed — the existing default carries through to the first DYING tick where it gets the proper ramp.
+- `densitas/render.py` — three changes inside the PixelRenderer:
+  - Walk-frame cycle is now **spatial**: `phase = (c.x + c.y) % 1.0` → `frame = 1 if phase < 0.5 else 2`. Each tile travelled = one step cycle, diagonals included. Replaces the prior `(int(sim_time / 0.25) + c.id) & 1` clock-driven toggle. Frame-rate independent and visually correct: when a citizen pauses, their feet stop.
+  - DYING render path is new — alpha-modulates the IDLE sprite by `c.dying_fade`. Uses `sprite.copy() + set_alpha()` (one copy per DYING citizen per render frame; cheap at the expected count). The sprite ghosts out over the 2 s dying_duration in lockstep with the belief-field fade.
+  - EATING render path is new — alternates between frame 0 (mouth closed, idle pose) and frame 3 (mouth open) every 0.4 sim sec keyed on `int(sim_time / 0.4) + c.id` so individual citizens chew out of phase.
+- `densitas/render.py :: _paint_citizen` — accepts `frame=3` as the "mouth open" variant. The 4 mouth-outline pixels (SOUTH/EAST/WEST facings) are dropped; NORTH-facing isn't shown from the front so the accent stays. Frame 3 reuses the idle leg layout. Sprite catalog grew from 24 to 32 keys (2 factions × 4 facings × 4 frames).
+- `tests/test_citizen.py` — `test_dying_fade_decays_over_dying_duration` (also wired into the `__main__` runner). After 5 ticks of 0.2s with dying_duration=2.0, fade should sit ~0.5; after 9 ticks, ~0.1.
+
+**Test results:** 86/86 pass (8 P0 + 12 P1 + 15 P2 + 20 P1.5 + 31 P3 PR1+PR2+Queue). P1 grew by 1.
+
+**Smoke test:** Headless. Built renderer with default config, confirmed all 32 sprite keys filled. Forced five citizens into IDLE / WANDER / EATING / DYING / FORAGE simultaneously and rendered at sim_time=1.0 and sim_time=1.4 to flex the EATING alternation — no crashes, alpha-fade with dying_fade=0.5 + skip-render with dying_fade=0.0 both clean.
+
+**No key changes** — pure visual polish. Players will notice but the cheatsheet stays the same.
+
+**Up next:** Either PR3 Religious Relics (finish P3) or back to the Menu PR. Both are gated on Matthew's call.
+
+---
+
+## 2026-05-21 (Cast Queue ship) — Click-chain Raise/Lower
+
+Cast Queue shipped — the player can rapid-click Raise/Lower tiles and the engine drip-feeds them through the existing 2 s cooldown. Five-tile coastline that used to be five separate clicks separated by frustrating waits is now five clicks in a row + ten seconds of watching the surface repaint.
+
+**What landed:**
+
+- `densitas/powers.py` — `QueuedCast` dataclass; `PowerSystem.queues: dict[(faction, kind), list[QueuedCast]]`; `cast_or_queue()` entry point (immediate-fire if ready AND queue empty, else enqueue); `drain_queues()` called from main-loop after `tick()`; `cancel_queued_at(tx, ty, kind, faction)` for surgical RMB cancel; `clear_queue(kind, faction)` for `C`-key bulk clear; `_dispatch_queued()` that re-validates the tile (burns cooldown silently if invalid, with `queued_invalid` scripture line, no refund); `_is_queueable()` + `QUEUEABLE_KINDS` frozenset (Raise+Lower only — extending is one-line).
+- `densitas/powers.py` — `can_cast(*, skip_cooldown=False)` keyword arg so enqueue can validate tier / pool / bounds / tile while knowing the cooldown is what triggered the queue path.
+- `densitas/render.py` — `Renderer.blit_cast_queue()` abstract + `PixelRenderer` impl. Amber ▲ for queued Raise, brown ▼ for queued Lower, with a 1-9 position number in the corner of each chevron. Drawn over citizens, under the cast preview.
+- `densitas/hud.py` — queue-count superscript on the R/L cooldown icons. Caps at 9 visually with a "+" suffix when the actual queue is longer.
+- `densitas/main.py` — LMB on a queueable mode routes to `cast_or_queue` instead of `cast`. RMB tries `cancel_queued_at` first; only falls through to mode-cancel if there's no queued tile under the cursor. `C` clears the queue for the current mode (no-op outside Raise/Lower). `drain_queues` called from the sim step right after `tick`. Debug overlay grows a "Queue: R x N (Ns)  L x M (Ms)" line.
+- `densitas/config.py` + `config.toml` — `queue_cap` field on `PowerConfig` (default 16).
+- `rhetoric.json` — `queued_invalid` block for Open Eye with consecration / doctrinal / ritual lines. The line shows in the scripture log when a queued cast's tile changed before dispatch — "The rite was answered before it was spoken."
+- `tests/test_powers.py` — 7 new tests (test_25-test_31): ready-fires-immediately, cooling-enqueues-and-debits, drain-pops-one-per-cleared-cooldown, cancel-refunds, clear-refunds-sum, queued-invalid-burns-and-logs, queue-cap-blocks-overflow. Uses the `_wire_mutate_tile` helper from PR2.
+
+**Test results:** 85/85 pass (8 P0 + 11 P1 + 15 P2 + 20 P1.5 + 24 P3 PR1+PR2 + 7 Queue). All 31 P3 tests run in ~0.4 s.
+
+**Smoke test:** Headless. Four rapid `cast_or_queue` clicks on adjacent GRASS tiles → 1 immediate fire (pool 200 → 195) + 3 queued (pool 195 → 180). Tick+drain loop for 10 sim sec → drains at t=2.2 / 4.4 / 6.6 sec exactly as the 2 s cooldown predicts. All four tiles end as FOREST. Cancel a specific queued tile → pool refunds +5 precisely. Clear-queue on remaining 2 → pool refunds +10 precisely.
+
+**Diversion from the menu PR.** `Densitas_menu.md` was written and signed off before Matthew playtested PR2 and felt the rapid-Raise/Lower ergonomic pain. The menu PR is paused — the spec stays in the repo, implementation will pick back up after Queue ships. Tracked in tasks.
+
+**Edit-tool lessons holding.** Re-used the patcher-script pattern from the PR2 recovery — no Edit calls on existing files, only Write to outputs + Python substring patcher in bash + atomic-rename + SHA verify. All eight code-file deploys hit OK on first try. One test assertion needed a fix (test_30 didn't account for pool regen during the 12-step cooldown tick); fixed with a second patcher pass and re-deploy.
+
+**Up next:** Either back to the Menu PR (the spec is sitting there ready to implement), or PR3 (Religious Relics) if Matthew wants to push P3 to feature-complete first. Both are gated on Matthew's call.
+
+---
+
 ## 2026-05-21 (P3 PR2 ship) — Raise / Lower terrain + drown rule
 
 P3 PR2 shipped — the player can now sculpt land.

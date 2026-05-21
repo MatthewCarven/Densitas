@@ -20,8 +20,8 @@
 - [x] ~~Citizen icon resolution~~ — 16-tall pixel humanoid (8 wide).
 - [x] ~~**Citizen sprite set**~~ — done 2026-05-20. 8x16 humanoid x 2 factions x 4 facings x 3 frames.
 - [ ] **Relic sprite placement on map.** The pixel-art glyphs from `Densitas_relic_glyphs_v1.html` get blitted at 16-24 px on the tile they occupy.
-- [ ] **Death-frame sprite.** DYING currently shows IDLE. Add a pale-fade variant; pair the animation with the belief fade introduced in P1.5.
-- [ ] **EATING frame.** Currently idle. Small "munch" detail (jaw pixel toggle) would communicate state without a full new sprite.
+- [x] ~~**Death-frame sprite.**~~ — done 2026-05-21. Alpha-fade rather than a new sprite; cheaper and pairs with the existing belief-fade smoothly.
+- [x] ~~**EATING frame.**~~ — done 2026-05-21. 4th frame per (faction, facing) with the mouth-outline pixels suppressed; renderer cycles 0 ↔ 3 every 0.4 sim sec.
 - [ ] Final HUD pass: settings menu, pause menu, end-of-round screen.
 
 ## Prototype P0 — Pixel world (SHIPPED 2026-05-20)
@@ -43,8 +43,8 @@
 - [x] 16-tall pixel sprite set.
 - [x] Config schema.
 - [x] 11 tests.
-- [ ] **Walk-frame animation polish** — tie to sub-tile movement progress.
-- [ ] **Death frame** — see Art/UX section.
+- [x] ~~**Walk-frame animation polish**~~ — done 2026-05-21. Frame cycles on spatial phase `(c.x + c.y) % 1.0` so animation steps with motion, not the clock.
+- [x] ~~**Death frame**~~ — done 2026-05-21. `dying_fade` field on Citizen updated each DYING tick; renderer alpha-modulates the IDLE sprite. Pairs with the P1.5 belief fade.
 
 ## Prototype P2 — Belief field (SHIPPED 2026-05-21)
 - [x] Belief spec (`Densitas_belief.md`).
@@ -84,6 +84,21 @@
 - [x] Config schema (`[powers]` and `[powers.relic]` blocks).
 - [x] 20 P3 tests (74 total in suite, all pass).
 - [x] `CastReceipt` seam left open for P5 counter-cast partial-cancel.
+
+## Prototype Cast Queue — Click-chain Raise/Lower (SHIPPED 2026-05-21)
+- [x] `Densitas_queue.md` spec doc.
+- [x] `QueuedCast` dataclass + `PowerSystem.queues` dict + `_is_queueable`.
+- [x] `cast_or_queue` entry point; `drain_queues` in main-loop sim step.
+- [x] `cancel_queued_at` (RMB on queued tile, refunds) + `clear_queue` (`C` key).
+- [x] `can_cast(..., skip_cooldown=True)` for the enqueue validation path.
+- [x] `_dispatch_queued` — re-validates tile; on invalid emits `queued_invalid` scripture line, burns cooldown, no refund.
+- [x] `Renderer.blit_cast_queue` (abstract + pixel) — amber ▲ / brown ▼ chevrons with 1-9 position numbers.
+- [x] HUD: queue-count superscript on R/L cooldown icons (caps at 9+).
+- [x] main.py: LMB routed to `cast_or_queue`; RMB tries cancel-first; `C` clears.
+- [x] Debug overlay shows `Queue: R x N (Ns)  L x M (Ms)`.
+- [x] `queue_cap` config field (default 16).
+- [x] `queued_invalid` rhetoric pool entries for Open Eye.
+- [x] 7 new tests (test_25-test_31), 85 total in suite.
 
 ## Prototype P3 PR2 — Raise / Lower terrain (SHIPPED 2026-05-21)
 - [x] `densitas/world.py :: mutate_tile(world, food, repaint_cb, tx, ty, new_tile)`.

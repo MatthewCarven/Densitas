@@ -203,6 +203,33 @@ def test_tier_list_has_5_tiers():
     assert len(set(thresholds)) == 5
 
 
+def test_dying_fade_decays_over_dying_duration():
+    """P1-polish: c.dying_fade tracks the fraction of dying_duration
+    remaining. The renderer alpha-modulates the sprite by this value.
+    """
+    cfg = _citizen_cfg(initial_population=1, dying_duration=2.0)
+    world = World.generate(_world_cfg())
+    cm = CitizenManager(cfg, world, world_seed=42)
+    c = cm.citizens[0]
+    # Pin age so lifespan-death doesn't kill us between assertions.
+    c.age = 0.0
+    # Force into DYING with the full timer.
+    c.state = CitizenState.DYING
+    c.state_timer = 2.0
+    c.dying_fade = 1.0
+    # 5 ticks of 0.2s = 1.0s elapsed. state_timer 2.0 -> 1.0, fade ~0.5.
+    for _ in range(5):
+        cm.tick(0.2, world, food=None)
+    assert c in cm.citizens, "citizen popped early"
+    assert c.state == CitizenState.DYING
+    assert abs(c.dying_fade - 0.5) < 0.01, c.dying_fade
+    # 4 more ticks (0.8s) — state_timer 1.0 -> 0.2, fade ~0.1.
+    for _ in range(4):
+        cm.tick(0.2, world, food=None)
+    assert c.dying_fade > 0.0
+    assert c.dying_fade < 0.2
+
+
 if __name__ == "__main__":
     tests = [
         test_spawn_initial_population_matches_config,
@@ -216,6 +243,7 @@ if __name__ == "__main__":
         test_citizens_die_at_lifespan,
         test_tier_thresholds_partition,
         test_tier_list_has_5_tiers,
+        test_dying_fade_decays_over_dying_duration,
     ]
     for t in tests:
         t()

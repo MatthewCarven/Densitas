@@ -109,6 +109,17 @@ class Renderer(abc.ABC):
         """
         ...
 
+    @abc.abstractmethod
+    def blit_cast_queue(self, screen: pygame.Surface, queues: dict,
+                         cam_x: float, cam_y: float, font) -> None:
+        """Paint chevrons for every queued cast (Densitas_queue.md §6.1).
+
+        `queues` is `PowerSystem.queues`; the renderer iterates and paints
+        amber ▲ on RAISE entries, brown ▼ on LOWER entries, with a small
+        position number in the corner.
+        """
+        ...
+
 
 class PixelRenderer(Renderer):
     def __init__(self, cfg: RenderConfig, rng_seed: int = 0,
@@ -171,9 +182,10 @@ class PixelRenderer(Renderer):
     # -- citizen sprites ----------------------------------------------------
 
     def _build_citizen_sprites(self) -> None:
+        # Frames: 0 idle, 1+2 walk cycle, 3 EATING munch (mouth-open variant).
         for faction, (skin, robe, accent, outline) in CITIZEN_PALETTE.items():
             for facing in Facing:
-                for frame in range(3):
+                for frame in range(4):
                     surf = self._paint_citizen(faction, facing, frame,
                                                 skin, robe, accent, outline)
                     self._citizen_sprites[(faction, int(facing), frame)] = surf
@@ -196,14 +208,17 @@ class PixelRenderer(Renderer):
             px(6, hy, outline)
         px(2, 0, outline); px(5, 0, outline)
 
-        if facing == Facing.SOUTH:
+        # Frame 3 = EATING munch — drop the mouth outline pixels so the
+        # mouth looks open. Cycles with frame 0 to give a chewing motion.
+        mouth_open = (frame == 3)
+        if facing == Facing.SOUTH and not mouth_open:
             px(3, 2, outline); px(4, 2, outline)
         elif facing == Facing.NORTH:
             for hx in range(2, 6):
                 px(hx, 1, accent)
-        elif facing == Facing.EAST:
+        elif facing == Facing.EAST and not mouth_open:
             px(4, 2, outline); px(5, 2, outline)
-        elif facing == Facing.WEST:
+        elif facing == Facing.WEST and not mouth_open:
             px(2, 2, outline); px(3, 2, outline)
 
         for ty in range(4, 10):
@@ -228,7 +243,8 @@ class PixelRenderer(Renderer):
                 px(0, ay, robe)
             px(0, 9, skin)
 
-        if frame == 0:
+        # Frame 3 (EATING munch) reuses the idle leg layout.
+        if frame == 0 or frame == 3:
             for ly in range(10, 14):
                 for lx in range(2, 4):
                     px(lx, ly, robe)
@@ -257,6 +273,12 @@ class PixelRenderer(Renderer):
 
     def blit_citizens(self, screen: pygame.Surface, citizens: Iterable[Citizen],
                        cam_x: float, cam_y: float, sim_time: float = 0.0) -> None:
+        """Paint each citizen. P1-polish:
+          * Walk frames cycle by *spatial* phase (position), not the clock.
+          * DYING citizens are alpha-faded by `c.dying_fade` (paired with
+            the P1.5 belief-field fade).
+          * EATING citizens chew — alternate frame 0 / frame 3 (mouth open).
+        """
         ts = self.cfg.tile_size
         vw, vh = self.cfg.viewport_w, self.cfg.viewport_h
         cx_int = int(cam_x)
@@ -269,8 +291,29 @@ class PixelRenderer(Renderer):
             wy = int(c.y * ts) - cy_int + (ts - CITIZEN_H)
             if wx + CITIZEN_W < 0 or wy + CITIZEN_H < 0 or wx >= vw or wy >= vh:
                 continue
-            if c.state in walk_states:
-                frame = 1 if (int(sim_time / 0.25) + c.id) & 1 else 2
+            # DYING — alpha-fade the idle sprite by remaining dying_fade.
+            if c.state == CitizenState.DYING:
+                sprite = sprites.get((c.faction, int(c.facing), 0))
+                if sprite is None:
+                    sprite = sprites[(0, int(Facing.SOUTH), 0)]
+                fade = max(0.0, min(1.0, getattr(c, "dying_fade", 1.0)))
+                if fade <= 0.0:
+                    continue
+                if fade < 0.999:
+                    tmp = sprite.copy()
+                    tmp.set_alpha(int(255 * fade))
+                    blit(tmp, (wx, wy))
+                else:
+                    blit(sprite, (wx, wy))
+                continue
+            # EATING — alternate mouth-closed (0) and mouth-open (3) ~2.5x/sec.
+            if c.state == CitizenState.EATING:
+                frame = 3 if (int(sim_time / 0.4) + c.id) & 1 else 0
+            elif c.state in walk_states:
+                # Spatial phase — animation steps with the citizen's actual
+                # motion. Sum x+y so diagonal travel still cycles cleanly.
+                phase = (c.x + c.y) % 1.0
+                frame = 1 if phase < 0.5 else 2
             else:
                 frame = 0
             sprite = sprites.get((c.faction, int(c.facing), frame))
@@ -427,6 +470,54 @@ class PixelRenderer(Renderer):
         for s in text_surfs:
             screen.blit(s, (chip_x + pad_x, oy))
             oy += s.get_height()
+
+    # -- cast queue (P3-Queue) ---------------------------------------------
+
+    def blit_cast_queue(self, screen: pygame.Surface, queues: dict,
+                         cam_x: float, cam_y: float, font) -> None:
+        """Paint amber ▲ for queued Raise, brown ▼ for queued Lower
+        (Densitas_queue.md §6.1). Position number in the upper-right of
+        each chevron; we draw 1-9 and stop (the chevron carries the
+        load-bearing signal past 9)."""
+        if not queues:
+            return
+        ts = self.cfg.tile_size
+        vw, vh = self.cfg.viewport_w, self.cfg.viewport_h
+        # Tints — match the cast-preview palette.
+        AMBER = (220, 180, 80)   # RAISE
+        BROWN = (160, 110, 70)   # LOWER
+        DARK  = (10, 10, 16)
+        for (_faction, kind_val), q in queues.items():
+            if not q:
+                continue
+            is_raise = kind_val == 10    # PowerKind.RAISE.value
+            is_lower = kind_val == 11    # PowerKind.LOWER.value
+            if not (is_raise or is_lower):
+                continue
+            tint = AMBER if is_raise else BROWN
+            for i, qc in enumerate(q, start=1):
+                sx = int(qc.tx * ts - cam_x)
+                sy = int(qc.ty * ts - cam_y)
+                if sx + ts < 0 or sy + ts < 0 or sx >= vw or sy >= vh:
+                    continue
+                cx = sx + ts // 2
+                cy = sy + ts // 2
+                r = max(5, ts // 2 - 2)
+                # Triangle (▲ up for raise, ▼ down for lower).
+                if is_raise:
+                    pts = [(cx, cy - r), (cx - r, cy + r), (cx + r, cy + r)]
+                else:
+                    pts = [(cx, cy + r), (cx - r, cy - r), (cx + r, cy - r)]
+                ov = pygame.Surface((ts + 4, ts + 4), pygame.SRCALPHA)
+                ov_pts = [(p[0] - sx + 2, p[1] - sy + 2) for p in pts]
+                pygame.draw.polygon(ov, (*tint, 180), ov_pts)
+                pygame.draw.polygon(ov, (*DARK,  220), ov_pts, width=1)
+                screen.blit(ov, (sx - 2, sy - 2))
+                # Position number (1-9 only; beyond that the chevron is enough).
+                if i <= 9 and font is not None:
+                    txt = font.render(str(i), True, DARK)
+                    screen.blit(txt, (cx + r - txt.get_width() - 1,
+                                       cy - r + 1 if is_raise else cy + 1))
 
 
 def make_renderer(cfg: RenderConfig) -> Renderer:

@@ -115,6 +115,8 @@ class Citizen:
     food_carried: int = 0     # P1.5 unused; reserved for future inventory tier
     # --- P3 PR1 additions ---
     inspire_bias_until: float = -1.0  # sim_t below which the citizen pursues an Inspire target
+    # --- P1-polish additions ---
+    dying_fade: float = 1.0           # 1.0 alive -> 0.0 fully faded; renderer modulates alpha
 
 
 class CitizenManager:
@@ -220,6 +222,9 @@ class CitizenManager:
 
             if c.state == CitizenState.DYING:
                 c.state_timer -= dt
+                # P1-polish: track fade fraction so the renderer can alpha-
+                # modulate the sprite over the dying_duration window.
+                c.dying_fade = max(0.0, c.state_timer / max(1e-6, cfg.dying_duration))
                 if c.state_timer <= 0.0:
                     dead_idx.append(i)
                 continue
