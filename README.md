@@ -60,7 +60,7 @@ The Empty Throne) and a handful of heresies, in
 | **P2 — Belief field** (density grid, heatmap overlay, HUD readout) | shipped |
 | **P1.5 — Food, forage & hunger** (tile food regen, carrying capacity) | shipped |
 | P2.5 — Fog of war | next |
-| **P3 — Powers T0–T1 + Religious Relics** (PR1 shipped: T0 + Bless/Curse + Pool + Scripture; PR2 terrain next; PR3 relics) | partial |
+| **P3 — Powers T0–T1 + Religious Relics** (PR1 shipped: T0 + Bless/Curse + Pool + Scripture; PR2 shipped: Raise/Lower + drown; PR3 relics next) | partial |
 | P4 — Rival god AI | planned |
 | P5 — Tiers T2–T4 (Tempest, Cataclysm, Apocalypse) | planned |
 | P6 — Win/lose conditions + polish | planned |
@@ -112,8 +112,8 @@ absent on upstream.
 - **1** — Inspire mode (T0, cost 0)
 - **2** — Calm mode (T0)
 - **3** — Hunger Pang mode (T0, cost 1)
-- **4** — Raise terrain (T1, PR2 — currently no-op stub)
-- **5** — Lower terrain (T1, PR2 — currently no-op stub)
+- **4** — Raise terrain (T1, cost 5, +1 rank on the height ladder, repaints world surface, food cap/regen follow new biome)
+- **5** — Lower terrain (T1, cost 5, -1 rank; citizens on a tile that becomes WATER (or any unwalkable type) drown)
 - **6** — Bless field (T1, cost 10, doubles food regen 30s)
 - **7** — Curse field (T1, cost 10, food regen 20% 30s)
 - **Left-click** — cast at the mouse tile (only while a mode is selected)
@@ -186,7 +186,7 @@ tests/
   test_citizen.py  - 11 tests
   test_belief.py   - 15 tests
   test_food.py     - 20 tests
-  test_powers.py   - 20 tests (P3 PR1)
+  test_powers.py   - 24 tests (P3 PR1 + PR2)
 rhetoric.json      - scripture-log line pool keyed on (power, god, voice_mode)
 config.toml        - all tunable parameters
 entry.py           - PyInstaller bootstrap

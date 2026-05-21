@@ -1,7 +1,8 @@
-"""Densitas - P3 PR1 entry point.
+"""Densitas - P3 PR2 entry point.
 
 Tile map + camera + terrain (P0) + citizens + HUD (P1) + belief field (P2)
-+ food/forage/hunger (P1.5) + Powers T0/T1 + Bless/Curse (P3 PR1).
++ food/forage/hunger (P1.5) + Powers T0/T1 + Bless/Curse (P3 PR1)
++ Raise/Lower terrain mutation + drown rule (P3 PR2).
 
 Run from the repo root with:
     python -m densitas.main
@@ -20,7 +21,7 @@ from typing import Optional
 import pygame
 
 from . import config
-from .world import World
+from .world import World, mutate_tile as world_mutate_tile, is_walkable_tile
 from .camera import Camera
 from .render import make_renderer
 from .citizen import CitizenManager
@@ -71,7 +72,7 @@ def main(argv: list[str] | None = None) -> int:
     cfg = config.load()
 
     pygame.init()
-    pygame.display.set_caption("Densitas - P3 PR1")
+    pygame.display.set_caption("Densitas - P3 PR2")
     screen = pygame.display.set_mode((cfg.render.viewport_w, cfg.render.viewport_h))
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("consolas,menlo,monaco,monospace", 14)
@@ -126,11 +127,25 @@ def main(argv: list[str] | None = None) -> int:
         rhet = Rhetoric({}, seed=cfg.world.seed)
 
     print("Wiring power system...")
+
+    # P3 PR2 — terrain mutation callback. Closes over world / food / renderer
+    # / world_surface / citizen_mgr so PowerSystem doesn't have to know about
+    # any of them. The drown rule (spec §5.3) runs here, *after* the world /
+    # food / surface have been updated — so the belief field on the next
+    # tick sees both the new tile and the now-DYING citizens.
+    def _mutate_tile_cb(tx: int, ty: int, new_tile: int) -> bool:
+        def _repaint(w, tx_, ty_):
+            renderer.repaint_tile(world_surface, w, tx_, ty_)
+        changed = world_mutate_tile(world, food, _repaint, tx, ty, new_tile)
+        if changed and not is_walkable_tile(int(world.tiles[ty, tx])):
+            citizen_mgr.drown_at(tx, ty, cfg.citizen.dying_duration)
+        return changed
+
     power_system = PowerSystem(
         cfg.powers,
         n_factions=2,
         rhetoric_pick=make_picker(rhet),
-        mutate_tile=None,  # PR2 wires this up
+        mutate_tile=_mutate_tile_cb,
     )
 
     hud = HUD()

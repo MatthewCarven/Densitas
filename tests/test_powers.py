@@ -1,7 +1,11 @@
-"""P3 PR1 tests — PowerSystem dispatch + T0/T1 + Bless/Curse + rhetoric.
+"""P3 tests — PowerSystem dispatch + T0/T1 + Bless/Curse + rhetoric (PR1)
+plus Raise/Lower terrain mutation + drown rule (PR2).
 
-Spec §12 numbered tests 1-11 + 7-9 (effects) + 16-18 (scripture/can_cast).
-Terrain mutation tests (12-15) live in PR2.
+Spec §12 numbered tests:
+  PR1: 1-11 (init / regen / cast validation / inspire / bless / curse / cooldown)
+       + 7-9 (effects) + 16-18 (scripture / can_cast / hunger pang).
+  PR2: 12-15 (raise/lower world+food update, mountain block, two-step lower,
+       drown). Live in this file as test_21..test_24.
 
 Run from /tmp/dtest_p3/ to dodge the flaky-mount pytest-cleanup recursion.
 """
@@ -389,3 +393,136 @@ def test_20_rhetoric_picks_line():
     # Missing key falls through to placeholder rather than KeyError.
     s2 = rhet.pick("doesnotexist", "open_eye", 0.0)
     assert s2 == "<doesnotexist>"
+
+
+# -- PR2 — Raise / Lower terrain mutation -----------------------------------
+#
+# Spec §12 #12-15. We wire a mutate_tile callback the same way main.py does:
+# `world.mutate_tile` for the world/food/repaint update + `cm.drown_at` for
+# any citizen left on a newly-unwalkable tile. The repaint_cb is a no-op so
+# the tests can run headlessly (no pygame surface required).
+
+def _no_repaint(world, tx, ty):
+    """Headless renderer stand-in for tests — does nothing."""
+    return None
+
+
+def _wire_mutate_tile(ps, world, food, citizen_mgr=None, dying_duration=2.0):
+    """Inject a mutate_tile callback into the PowerSystem (same shape main.py uses)."""
+    from densitas.world import mutate_tile, is_walkable_tile
+
+    def cb(tx, ty, new_tile):
+        changed = mutate_tile(world, food, _no_repaint, tx, ty, new_tile)
+        if changed and citizen_mgr is not None:
+            if not is_walkable_tile(int(world.tiles[ty, tx])):
+                citizen_mgr.drown_at(tx, ty, dying_duration)
+        return changed
+
+    ps._mutate_tile = cb
+
+
+def test_21_raise_grass_to_forest_updates_world_and_food(make_env):
+    """Spec §12 #12 — Raise on GRASS should bump tile, heightmap, and food
+    cap/regen from the new tile's biome row."""
+    cm, world, food, belief, ps, _ = make_env()
+    _stuff_population(cm, world, 20, faction=0)
+    _wire_mutate_tile(ps, world, food, cm)
+    tx, ty = 5, 5
+    # Force-set the starting state so the test doesn't depend on the fixture.
+    world.tiles[ty, tx] = int(Tile.GRASS)
+    food.cap[ty, tx] = 0.8
+    food.regen[ty, tx] = 0.005
+    food.food[ty, tx] = 0.8
+    h_before = float(world.heightmap[ty, tx])
+    food_ver_before = food.version
+
+    ps.pool[0] = 100.0
+    r = ps.cast(PowerKind.RAISE, 0, tx, ty, cm, world, food, belief, sim_t=0.0)
+    assert r.ok, r.reason
+    # Tile climbed one rank on the height ladder.
+    assert int(world.tiles[ty, tx]) == int(Tile.FOREST)
+    # Food field follows the new biome (FOREST: 1.0 cap, 0.007 regen — see _food_cfg).
+    assert math.isclose(float(food.cap[ty, tx]),   1.0,   abs_tol=1e-5)
+    assert math.isclose(float(food.regen[ty, tx]), 0.007, abs_tol=1e-6)
+    # Heightmap moved (canonical band for the new tile).
+    assert float(world.heightmap[ty, tx]) != h_before
+    # Food version bumped so any cached overlay invalidates.
+    assert food.version > food_ver_before
+
+
+def test_22_raise_on_mountain_fails_with_reason(make_env):
+    """Spec §12 #13 — MOUNTAIN cannot be raised; can_cast surfaces the reason."""
+    cm, world, food, belief, ps, _ = make_env()
+    _stuff_population(cm, world, 20, faction=0)
+    _wire_mutate_tile(ps, world, food, cm)
+    tx, ty = 5, 5
+    world.tiles[ty, tx] = int(Tile.MOUNTAIN)
+    ps.pool[0] = 100.0
+    r = ps.cast(PowerKind.RAISE, 0, tx, ty, cm, world, food, belief, sim_t=0.0)
+    assert not r.ok
+    assert r.reason == "can't raise mountain"
+    # Validation failure: pool untouched, no cooldown set.
+    assert ps.pool[0] == 100.0
+    assert (0, int(PowerKind.RAISE)) not in ps.cooldowns
+
+
+def test_23_two_lowers_take_grass_to_beach_to_water(make_env):
+    """Spec §12 #14 — sequential Lower casts walk down the height ladder.
+    Confirms WATER tiles have zero food cap/regen after the second step."""
+    cm, world, food, belief, ps, _ = make_env()
+    _stuff_population(cm, world, 20, faction=0)
+    _wire_mutate_tile(ps, world, food, cm)
+    tx, ty = 5, 5
+    world.tiles[ty, tx] = int(Tile.GRASS)
+    food.cap[ty, tx] = 0.8
+    food.regen[ty, tx] = 0.005
+    ps.pool[0] = 100.0
+
+    r1 = ps.cast(PowerKind.LOWER, 0, tx, ty, cm, world, food, belief, sim_t=0.0)
+    assert r1.ok, r1.reason
+    assert int(world.tiles[ty, tx]) == int(Tile.BEACH)
+    # Beach biome row from _food_cfg.
+    assert math.isclose(float(food.cap[ty, tx]),   0.5,   abs_tol=1e-5)
+    assert math.isclose(float(food.regen[ty, tx]), 0.003, abs_tol=1e-6)
+
+    # Clear cooldown for the second cast.
+    ps.cooldowns.clear()
+    r2 = ps.cast(PowerKind.LOWER, 0, tx, ty, cm, world, food, belief, sim_t=2.5)
+    assert r2.ok, r2.reason
+    assert int(world.tiles[ty, tx]) == int(Tile.WATER)
+    # WATER is barren (not in the biome table) — cap/regen drop to 0.
+    assert float(food.cap[ty, tx])   == 0.0
+    assert float(food.regen[ty, tx]) == 0.0
+    # Standing food clamped down with the cap.
+    assert float(food.food[ty, tx])  == 0.0
+
+
+def test_24_lower_into_water_drowns_citizen(make_env):
+    """Spec §12 #15 — a citizen left on a tile that becomes WATER (or any
+    other unwalkable type) transitions to DYING."""
+    # Park the population well away from the test tile so the only citizen
+    # at (5, 5) is the victim we drop in here.
+    cm, world, food, belief, ps, _ = make_env()
+    _stuff_population(cm, world, 20, faction=0, around_xy=(20, 18))
+    tx, ty = 5, 5
+    # Set up BEACH so one Lower takes it to WATER.
+    world.tiles[ty, tx] = int(Tile.BEACH)
+    food.cap[ty, tx]   = 0.5
+    food.regen[ty, tx] = 0.003
+
+    victim = cm._make_citizen(faction=0, x=float(tx) + 0.5, y=float(ty) + 0.5, age=10.0)
+    cm.citizens.append(victim)
+    assert victim.state != CitizenState.DYING
+
+    _wire_mutate_tile(ps, world, food, cm, dying_duration=2.0)
+    ps.pool[0] = 100.0
+    r = ps.cast(PowerKind.LOWER, 0, tx, ty, cm, world, food, belief, sim_t=0.0)
+    assert r.ok, r.reason
+    assert int(world.tiles[ty, tx]) == int(Tile.WATER)
+    # The drown rule fired in the closure after mutate_tile returned True.
+    assert victim.state == CitizenState.DYING
+    assert victim.state_timer > 0.0
+    # Calling drown_at again on the same tile is idempotent (already-DYING skipped).
+    cm.drown_at(tx, ty, dying_duration=2.0)
+    assert victim.state == CitizenState.DYING
+

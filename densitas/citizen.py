@@ -21,6 +21,11 @@ P3 PR1 adds two CitizenManager hooks the PowerSystem calls:
   * `find_nearest_other_faction` — Hunger-Pang dispatch helper.
   * `spawn_rival_stub(seed, n)` — debug-flag entry point for live-play
     testing of multi-faction codepaths before P4.
+
+P3 PR2 adds the drown rule:
+  * `drown_at(tx, ty, dying_duration)` — Raise/Lower invokes this when
+    the mutated tile becomes unwalkable; every live citizen on that
+    tile transitions to DYING (the existing 2.0s fade applies).
 """
 from __future__ import annotations
 import enum
@@ -406,6 +411,30 @@ class CitizenManager:
             best = c
             best_d2 = d2
         return best
+
+    def drown_at(self, tx: int, ty: int, dying_duration: float) -> int:
+        """Transition every live citizen currently standing on tile
+        (tx, ty) to DYING with `dying_duration` seconds left on the timer.
+
+        Used by the Raise/Lower drown rule (P3 PR2 spec §5.3) — invoked
+        after `world.mutate_tile` from the main loop when the new tile
+        is unwalkable. Idempotent: citizens already DYING are skipped,
+        so calling twice on the same tile is a no-op on the second pass.
+
+        Returns the number of citizens newly DYING. The 2s fade in the
+        belief field falls out for free (existing DYING-fades-belief
+        behaviour, P1.5).
+        """
+        tx_i = int(tx); ty_i = int(ty)
+        drowned = 0
+        for c in self.citizens:
+            if c.state == CitizenState.DYING:
+                continue
+            if int(c.x) == tx_i and int(c.y) == ty_i:
+                c.state = CitizenState.DYING
+                c.state_timer = float(dying_duration)
+                drowned += 1
+        return drowned
 
     def spawn_rival_stub(self, world: World, n: int, faction: int = 1,
                           seed: int = 0) -> int:

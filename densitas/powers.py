@@ -14,7 +14,12 @@ P3 PR1 ships:
   T0 — Inspire (real), Calm (stub), Hunger Pang (stub-against-rival).
   T1 — Bless, Curse.
 
-PR2 will add Raise/Lower; PR3 adds Relics.
+P3 PR2 ships:
+  T1 — Raise / Lower, wired through `mutate_tile=` (passed in from main.py
+  so powers.py stays renderer-agnostic). Drown rule runs in the caller's
+  closure after a successful mutation.
+
+PR3 adds Relics.
 
 The dispatch table is a dict of callables so each new power kind in P5
 adds exactly one registration line.
@@ -330,7 +335,9 @@ class PowerSystem:
 
     def _dispatch_raise(self, faction, tx, ty, strength, citizens,
                          world, food, belief, sim_t):
-        # PR2 — terrain mutation. Stubbed for PR1 so the dispatch table is complete.
+        # PR2: terrain step up via the injected callback. main.py wires it.
+        # If no callback (unit tests, headless smokes), this is a no-op —
+        # the cast still charges per the "dispatch failure charges" rule.
         if self._mutate_tile is None:
             return
         old = int(world.tiles[ty, tx])
@@ -341,6 +348,8 @@ class PowerSystem:
 
     def _dispatch_lower(self, faction, tx, ty, strength, citizens,
                          world, food, belief, sim_t):
+        # PR2: terrain step down. The drown rule for newly-water tiles
+        # runs inside the callback (see main.py's closure).
         if self._mutate_tile is None:
             return
         old = int(world.tiles[ty, tx])

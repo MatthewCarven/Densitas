@@ -2,12 +2,21 @@
 
 A World is a 2D grid of tile types plus an underlying heightmap.
 Terrain generation uses multi-octave value noise, self-contained (no scipy).
+
+P3 PR2 adds `mutate_tile()` plus the small biome-walkability helpers the
+Raise/Lower powers and their drown rule depend on. `mutate_tile` is the
+single seam where tile, heightmap, and food state move in lockstep; the
+caller (main.py) wraps it with a repaint_cb + drown step.
 """
 from __future__ import annotations
 import enum
 import numpy as np
 from dataclasses import dataclass
+from typing import Callable, Optional, TYPE_CHECKING
 from .config import WorldConfig
+
+if TYPE_CHECKING:
+    from .food import FoodField
 
 
 class Tile(enum.IntEnum):
@@ -30,6 +39,89 @@ class Tile(enum.IntEnum):
         if h < cfg.hill_thresh:      return cls.FOREST
         if h < cfg.mountain_thresh:  return cls.HILL
         return cls.MOUNTAIN
+
+
+# -- biome metadata (P3 PR2) -------------------------------------------------
+
+# Tiles a citizen can stand on / walk through. The drown rule fires for any
+# citizen left on a tile NOT in this set after a Raise or Lower. Kept in
+# sync with WALKABLE_TILES in citizen.py — duplicated here so world.py can
+# answer the question without importing citizen.
+WALKABLE_TILE_IDS: frozenset[int] = frozenset({
+    int(Tile.GRASS), int(Tile.BEACH), int(Tile.FOREST), int(Tile.HOLY),
+})
+
+
+def is_walkable_tile(tile_id: int) -> bool:
+    """True if a citizen can stand on this tile."""
+    return int(tile_id) in WALKABLE_TILE_IDS
+
+
+# Canonical heightmap value per tile, picked at the midpoint of each
+# elevation band. The exact numbers don't drive gameplay — `tiles` does —
+# they only affect any future renderer that shades by height. Raise/Lower
+# sets the new tile's heightmap to its canonical band value so the visual
+# steps cleanly between ranks.
+_TILE_HEIGHT_BAND: dict[int, float] = {
+    int(Tile.WATER):    0.15,
+    int(Tile.BEACH):    0.32,
+    int(Tile.GRASS):    0.45,
+    int(Tile.FOREST):   0.62,
+    int(Tile.HILL):     0.77,
+    int(Tile.MOUNTAIN): 0.92,
+    int(Tile.LAVA):     0.45,
+    int(Tile.BLIGHTED): 0.45,
+    int(Tile.HOLY):     0.50,
+}
+
+
+def heightmap_for(tile_id: int) -> float:
+    """Canonical heightmap value (0..1) for a tile, used post-mutation."""
+    return _TILE_HEIGHT_BAND.get(int(tile_id), 0.5)
+
+
+# repaint_cb signature: (world, tx, ty) -> None.
+RepaintCallback = Callable[["World", int, int], None]
+
+
+def mutate_tile(world: "World", food: "FoodField",
+                 repaint_cb: Optional[RepaintCallback],
+                 tx: int, ty: int, new_tile: int) -> bool:
+    """Mutate `(tx, ty)` to `new_tile`. Updates world.tiles, world.heightmap,
+    and the food field's cap/regen/food in lockstep, then invokes
+    `repaint_cb(world, tx, ty)` so the renderer can patch the world surface.
+
+    The drown rule lives *outside* this function — the caller checks
+    `is_walkable_tile(new_tile)` and calls `citizens.drown_at(...)` itself.
+    Keeping that seam separate lets tests exercise the world/food update
+    without a CitizenManager, and keeps world.py from importing citizen.py.
+
+    Returns True on a real mutation; False if the tile was already that
+    type or the coordinate was OOB (in which case repaint_cb is not invoked
+    and the caller should skip its drown / log / chrome steps).
+    """
+    tx = int(tx); ty = int(ty); new_tile = int(new_tile)
+    if not world.in_bounds(tx, ty):
+        return False
+    old = int(world.tiles[ty, tx])
+    if old == new_tile:
+        return False
+    # Lookup the biome row for the new tile. Lazy import dodges the
+    # food.py -> world.py top-level import cycle.
+    from .food import _biome_table
+    table = _biome_table(food.cfg)
+    cap, regen = table.get(new_tile, (0.0, 0.0))
+    world.tiles[ty, tx] = np.uint8(new_tile)
+    world.heightmap[ty, tx] = np.float32(heightmap_for(new_tile))
+    food.cap[ty, tx] = np.float32(cap)
+    food.regen[ty, tx] = np.float32(regen)
+    # Clamp standing food to the (possibly new) cap.
+    if float(food.food[ty, tx]) > float(cap):
+        food.food[ty, tx] = np.float32(cap)
+    food.version += 1
+    if repaint_cb is not None:
+        repaint_cb(world, tx, ty)
+    return True
 
 
 @dataclass

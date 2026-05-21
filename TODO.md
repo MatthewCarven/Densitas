@@ -7,7 +7,7 @@
 - [x] ~~Define the belief-field math precisely~~ — done 2026-05-21 in `Densitas_belief.md`.
 - [x] ~~Spec food/forage/hunger~~ — done 2026-05-21 in `Densitas_food.md`. Tile-attribute food, hunger gate, FORAGE/EATING transitions, starvation, DYING-fades-belief.
 - [ ] Spec the rival god AI for each personality (Zealot / Steward / Trickster): decision loop, target selection, when to spend belief vs hoard.
-- [ ] Define terrain generation: ~~heightmap method~~ (done), biome derivation rules (done), starting-position fairness (open).
+- [ ] Define terrain generation: ~~heightmap method~~ (done), biome derivation rules (done), starting-position fairness (open). (Raise/Lower mutation pipeline shipped P3 PR2.)
 - [ ] **Relic spec.** Placement UI (drag from tray? click on map?), visual representation, the shattering animation/sound, retrieval flow.
 - [ ] **Relic-shatter summary screen.** When a relic shatters, show: god, relic name, tile, local-belief at shatter, # of player citizens within 8 tiles, # of rival citizens within 8 tiles, time-since-placed, # of times moved.
 - [ ] **Rhetoric pool expansion.** Write 6-10 lines per power per voice mode.
@@ -85,14 +85,14 @@
 - [x] 20 P3 tests (74 total in suite, all pass).
 - [x] `CastReceipt` seam left open for P5 counter-cast partial-cancel.
 
-## Prototype P3 PR2 — Raise / Lower terrain
-- [ ] `densitas/world.py :: mutate_tile(world, food, repaint_cb, tx, ty, new_tile)`.
-- [ ] `Renderer.repaint_tile(world_surface, world, tx, ty)` — abstract + pixel impl.
-- [ ] PowerSystem `_dispatch_raise` / `_dispatch_lower` call into mutate_tile (currently stubbed in PR1 — `_mutate_tile=None`).
-- [ ] Heightmap update — bump `world.heightmap[ty, tx]` by `±0.18` per rank.
-- [ ] Food field cap+regen recomputed from biome for the new tile.
-- [ ] Drown rule — citizens on a newly-unwalkable tile transition to DYING.
-- [ ] Tests 12-15 from spec §12.
+## Prototype P3 PR2 — Raise / Lower terrain (SHIPPED 2026-05-21)
+- [x] `densitas/world.py :: mutate_tile(world, food, repaint_cb, tx, ty, new_tile)`.
+- [x] `Renderer.repaint_tile(world_surface, world, tx, ty)` — abstract + pixel impl.
+- [x] PowerSystem `_dispatch_raise` / `_dispatch_lower` call into mutate_tile (PR1 stub replaced; main.py injects the callback).
+- [x] Heightmap update — canonical band midpoint per tile via `heightmap_for()`.
+- [x] Food field cap+regen recomputed from biome for the new tile.
+- [x] Drown rule — citizens on a newly-unwalkable tile transition to DYING via `CitizenManager.drown_at()`.
+- [x] Tests 12-15 from spec §12 (live as test_21-test_24, 24 P3 tests total).
 
 ## Prototype P3 PR3 — Religious Relics
 - [ ] `densitas/relics.py` — `Relic`, `RelicManager`, `RelicState` (AVAILABLE/PLACED/SHATTERED).

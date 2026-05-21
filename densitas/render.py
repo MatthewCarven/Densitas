@@ -99,6 +99,16 @@ class Renderer(abc.ABC):
                            tx: int, ty: int, ok: bool, reason: str,
                            cam_x: float, cam_y: float, font) -> None: ...
 
+    @abc.abstractmethod
+    def repaint_tile(self, world_surface: pygame.Surface, world: World,
+                      tx: int, ty: int) -> None:
+        """Re-blit a single tile's sprite onto the cached world surface.
+
+        Called by `world.mutate_tile` after a Raise/Lower mutation so the
+        world surface stays current without a full rebuild.
+        """
+        ...
+
 
 class PixelRenderer(Renderer):
     def __init__(self, cfg: RenderConfig, rng_seed: int = 0,
@@ -143,6 +153,20 @@ class PixelRenderer(Renderer):
                 idx = (x * 73856093 ^ y * 19349663 ^ int(tile) * 83492791) % len(variants)
                 surf.blit(variants[idx], (x * ts, y * ts))
         return surf
+
+    def repaint_tile(self, world_surface: pygame.Surface, world: World,
+                      tx: int, ty: int) -> None:
+        """Blit a single tile onto the cached world surface (P3 PR2).
+
+        Uses the same deterministic hash as `build_world_surface` so the
+        variant choice for a given (tx, ty, tile_id) is stable across
+        rebuilds. Avoids a full re-render after every Raise/Lower cast.
+        """
+        ts = self.cfg.tile_size
+        tile = Tile(int(world.tiles[ty, tx]))
+        variants = self._tile_sprites[tile]
+        idx = (tx * 73856093 ^ ty * 19349663 ^ int(tile) * 83492791) % len(variants)
+        world_surface.blit(variants[idx], (tx * ts, ty * ts))
 
     # -- citizen sprites ----------------------------------------------------
 

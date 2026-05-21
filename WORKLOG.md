@@ -1,3 +1,26 @@
+## 2026-05-21 (P3 PR2 ship) — Raise / Lower terrain + drown rule
+
+P3 PR2 shipped — the player can now sculpt land.
+
+**What landed:**
+
+- `densitas/world.py` — `mutate_tile(world, food, repaint_cb, tx, ty, new_tile)`. Single seam where tile + heightmap + food cap/regen/food update together; the renderer repaint runs inside as a callback. Returns `True` only on a real change so the caller can skip drown / log side effects. Added `is_walkable_tile()` + `WALKABLE_TILE_IDS` (mirrors `citizen.py`'s `WALKABLE_TILES` so world.py can answer the drown question without importing citizen) and `heightmap_for()` (canonical 0..1 band midpoint per tile).
+- `densitas/citizen.py` — `CitizenManager.drown_at(tx, ty, dying_duration)`. Idempotent: skips citizens already in DYING. The existing 2s DYING-fade-belief refinement (P1.5) handles the visual + belief decay for free.
+- `densitas/render.py` — `Renderer.repaint_tile()` abstract method + `PixelRenderer` impl. Uses the same deterministic hash as `build_world_surface` so the variant choice for `(tx, ty, tile_id)` stays stable across mutations.
+- `densitas/powers.py` — dropped the "stubbed for PR1" comments on `_dispatch_raise` / `_dispatch_lower`; both now call the injected `_mutate_tile` callback. No-callback case stays a quiet no-op (still charges the cast per the "dispatch failure charges" rule).
+- `densitas/main.py` — wires the `_mutate_tile_cb` closure into `PowerSystem(mutate_tile=...)`. The closure captures world / food / renderer / world_surface / citizen_mgr, calls `world.mutate_tile`, then runs the drown rule if the new tile is unwalkable. Caption bumped to "Densitas - P3 PR2".
+- `tests/test_powers.py` — 4 new tests (test_21..test_24) covering spec §12 #12–15: raise GRASS→FOREST updates everything; raise on MOUNTAIN fails with reason; two Lowers walk GRASS→BEACH→WATER and zero the food cap/regen; lower-into-water drowns a citizen and is idempotent.
+
+**Test results:** 78/78 pass (8 P0 + 11 P1 + 15 P2 + 20 P1.5 + 24 P3 PR1+PR2). All 24 P3 tests run in ~0.22 s.
+
+**Smoke test:** Headless `World.generate` + `mutate_tile(GRASS → FOREST)` + `repaint_tile` round-trip works end-to-end. Food cap moves 0.8 → 1.0 (FOREST biome), `is_walkable_tile` returns True for the new tile, drown_at on an empty tile returns 0.
+
+**Edit-tool truncation incident — recovered.** First pass tried to land the PR2 edits via the Edit tool. Every file ended up at its *original* byte count with the additions inserted but the tail content silently lost — same shape of failure the [[feedback-densitas-mount]] note warned about, except it manifested in `/outputs` not the project mount. Recovered by extracting originals from `git show HEAD:` into `/tmp/restore/`, running a deterministic Python substring-patcher (`outputs/patch_pr2.py`), then atomic-renaming the patched files into the project. **Conclusion:** for files >10 KB in this session's mount stack, prefer Write (full file) over Edit (substring). The patcher script is kept under `/outputs` for replay if PR3 hits the same pothole.
+
+**Up next (PR3):** Religious Relics. `densitas/relics.py` new module; `BeliefField.recompute(..., relics=None, sim_t=0.0)` + `_scatter_relics` with linear fade-in over place_cooldown; citizen attractor list + `_pick_wander_target` integration; shatter rule; tray UI; `R` / `Shift+R` mode select; 10 P3 PR3 tests (spec §12 #19–28). With PR1 + PR2 + PR3 done, P3 is feature-complete.
+
+---
+
 ## 2026-05-21 (P3 PR1 ship) — Powers T0–T1 + Bless/Curse
 
 P3 PR1 shipped — the player-verb layer is live.
