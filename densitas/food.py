@@ -1,27 +1,28 @@
 """Food field — tile-attribute food layer + per-biome regeneration.
 
-See `Densitas_food.md` for the spec. Summary:
+See `Densitas_food.md` for the spec and `Densitas_P3.md` §5/§7 for the
+P3 effect-folding extension. Summary:
 
   * Per-tile `food: float32` array, same shape as `world.tiles`.
   * Biome dictates initial value (== cap) and regen rate per sim second.
-  * Each citizen tick: `food = min(food + regen * dt, cap)`.
+  * Each citizen tick: `food = min(food + effective_regen * dt, cap)`.
   * Consumed by citizens in EATING state via `consume(tx, ty, amount)`.
+  * P3 adds an optional `effects` parameter to `recompute()` that folds
+    Bless/Curse multipliers on top of the per-tile base regen.
 
 Mirrors `BeliefField` syntactically (recompute / query / grid / version)
 so the renderer can treat them with the same shape.
-
-The food field is the carrying-capacity mechanism: by limiting calorie
-flow into the population, reproduction self-throttles long before the
-exponential blowup we saw in P2 (132k citizens at sim_t 620s on default
-seed; cured by gating mating on hunger and starving citizens that can't eat).
 """
 from __future__ import annotations
-from typing import Optional
+from typing import Iterable, Optional, TYPE_CHECKING
 
 import numpy as np
 
 from .config import FoodConfig
 from .world import World, Tile
+
+if TYPE_CHECKING:
+    from .powers import ActiveEffect
 
 
 # Biome -> (initial, regen) lookup, materialised at FoodField construction
@@ -69,12 +70,23 @@ class FoodField:
 
     # -- recompute ----------------------------------------------------------
 
-    def recompute(self, dt: float) -> None:
-        """Advance the field by `dt` sim seconds. Vectorised."""
+    def recompute(self, dt: float,
+                   effects: "Optional[Iterable[ActiveEffect]]" = None) -> None:
+        """Advance the field by `dt` sim seconds. Vectorised.
+
+        `effects` is an optional iterable of P3 `ActiveEffect`s; Bless
+        multiplies a tile's regen, Curse divides it. Folding is per-tick
+        rather than persistent so an expired effect immediately reverts.
+        """
         if dt <= 0.0:
             return
-        # food = min(food + regen * dt, cap)
-        np.add(self.food, self.regen * dt, out=self.food)
+        if effects:
+            # Lazy import to avoid the cycle with powers.py.
+            from .powers import effective_food_regen
+            eff_regen = effective_food_regen(self.regen, effects)
+        else:
+            eff_regen = self.regen
+        np.add(self.food, eff_regen * dt, out=self.food)
         np.minimum(self.food, self.cap, out=self.food)
         self.version += 1
 

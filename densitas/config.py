@@ -5,7 +5,7 @@ on older versions. Defines frozen dataclasses for type-checked access.
 """
 from __future__ import annotations
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 try:
@@ -106,6 +106,50 @@ class FoodConfig:
 
 
 @dataclass(frozen=True)
+class RelicConfig:
+    amplitude: float
+    place_cooldown: float
+    shatter_ratio: float
+    shatter_time: float
+    attract_radius: int
+    attract_probability: float
+    initial_count: int
+
+
+@dataclass(frozen=True)
+class PowerConfig:
+    """P3: PowerSystem tunables.
+
+    `k_tier` is a list of length N_TIERS+1 indexed 0..4 mapping tier
+    index to the divisor used in strength scaling. Sensible defaults:
+    higher tiers have larger divisors so the scaling stays in roughly
+    1.0-ish range across tiers when local belief is "decent for that tier".
+    """
+    belief_regen_per_citizen: float
+    k_tier: tuple[float, ...]
+    rhetoric_fade_seconds: float
+    scripture_log_max: int
+    # Cooldown overrides (None = use POWERS spec default)
+    inspire_cooldown: float
+    calm_cooldown: float
+    hunger_pang_cooldown: float
+    raise_cooldown: float
+    lower_cooldown: float
+    bless_cooldown: float
+    curse_cooldown: float
+    # Effect multipliers
+    bless_multiplier: float
+    curse_multiplier: float
+    effect_duration_t1: float
+    # AoE radii (some are 0 for point targets)
+    inspire_radius: int
+    hunger_pang_radius: int
+    bless_radius: int
+    curse_radius: int
+    relic: RelicConfig
+
+
+@dataclass(frozen=True)
 class Config:
     world: WorldConfig
     render: RenderConfig
@@ -113,6 +157,7 @@ class Config:
     citizen: CitizenConfig
     belief: BeliefConfig
     food: FoodConfig
+    powers: PowerConfig
 
 
 def load(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
@@ -124,6 +169,11 @@ def load(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
     food_raw = dict(raw["food"])
     biome_raw = food_raw.pop("biome")
 
+    powers_raw = dict(raw["powers"])
+    relic_raw = powers_raw.pop("relic")
+    # Normalise list -> tuple for k_tier.
+    powers_raw["k_tier"] = tuple(float(x) for x in powers_raw["k_tier"])
+
     return Config(
         world=WorldConfig(**raw["world"]),
         render=RenderConfig(**raw["render"]),
@@ -131,4 +181,5 @@ def load(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
         citizen=CitizenConfig(**raw["citizen"]),
         belief=BeliefConfig(**raw["belief"]),
         food=FoodConfig(biome=FoodBiomeConfig(**biome_raw), **food_raw),
+        powers=PowerConfig(relic=RelicConfig(**relic_raw), **powers_raw),
     )

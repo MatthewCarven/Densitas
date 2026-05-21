@@ -60,7 +60,7 @@ The Empty Throne) and a handful of heresies, in
 | **P2 — Belief field** (density grid, heatmap overlay, HUD readout) | shipped |
 | **P1.5 — Food, forage & hunger** (tile food regen, carrying capacity) | shipped |
 | P2.5 — Fog of war | next |
-| P3 — Powers T0–T1 + Religious Relics | planned |
+| **P3 — Powers T0–T1 + Religious Relics** (PR1 shipped: T0 + Bless/Curse + Pool + Scripture; PR2 terrain next; PR3 relics) | partial |
 | P4 — Rival god AI | planned |
 | P5 — Tiers T2–T4 (Tempest, Cataclysm, Apocalypse) | planned |
 | P6 — Win/lose conditions + polish | planned |
@@ -109,10 +109,29 @@ absent on upstream.
 
 - **WASD** / **arrow keys** — scroll the map
 - **Mouse to screen edge** — edge-scroll
+- **1** — Inspire mode (T0, cost 0)
+- **2** — Calm mode (T0)
+- **3** — Hunger Pang mode (T0, cost 1)
+- **4** — Raise terrain (T1, PR2 — currently no-op stub)
+- **5** — Lower terrain (T1, PR2 — currently no-op stub)
+- **6** — Bless field (T1, cost 10, doubles food regen 30s)
+- **7** — Curse field (T1, cost 10, food regen 20% 30s)
+- **Left-click** — cast at the mouse tile (only while a mode is selected)
+- **Right-click** / **ESC** (with mode selected) — cancel mode
 - **F3** — toggle debug overlay
 - **B** — toggle belief heatmap overlay
 - **F** — toggle food heatmap overlay
-- **ESC** — quit
+- **ESC** (no mode selected) — quit
+
+### Debug flags
+
+- `--rival-stub-seed N` — spawn N faction-1 citizens at the canonical rival
+  origin (3/4 across, mid-height). Exercises multi-faction codepaths
+  (relic shatter, belief two-faction scatter) before P4 lands real rival AI.
+
+  ```bash
+  python -m densitas.main --rival-stub-seed 24
+  ```
 
 ## Configuration
 
@@ -139,26 +158,36 @@ The most useful knobs:
 | `food.hunger_rate` | Per-sim-sec hunger accrual. Default 0.05 -> 20s full->starving. |
 | `food.repro_hunger_threshold` | Both mates must be below this (0..1) to reproduce. Default 0.30. |
 | `food.biome.*_regen` | Per-biome food regeneration rate. Drives carrying capacity. |
+| `powers.belief_regen_per_citizen` | Pool gain per citizen per sim sec (default 0.02). |
+| `powers.k_tier` | Strength-scaling divisor per tier (T0..T4). Higher = weaker scaling. |
+| `powers.bless_multiplier` / `curse_multiplier` | Food-regen multipliers for Bless / Curse (default 2.0 / 0.2). |
+| `powers.effect_duration_t1` | How long Bless/Curse persist (default 30 sim sec). |
+| `powers.relic.amplitude` | Per-relic belief contribution at full strength (default 20.0). |
+| `powers.relic.shatter_ratio` / `shatter_time` | Rival belief ratio + sustained time to shatter (1.5 / 8.0 sim sec). |
 
 ## Project layout
 
 ```
 densitas/
   __init__.py
-  main.py          - entry point + game loop
+  main.py          - entry point + game loop + input handling
   config.py        - dataclasses + TOML loader
   world.py         - heightmap + tile classification
   camera.py        - WASD/arrow/edge scroll + clamping
-  render.py        - Renderer ABC + PixelRenderer (tiles, citizens, belief)
-  citizen.py       - Citizen + CitizenManager + tier lookup
+  render.py        - Renderer ABC + PixelRenderer (tiles, citizens, belief, food, cast preview)
+  citizen.py       - Citizen + CitizenManager + tier lookup + inspire/rival hooks
   belief.py        - BeliefField (density grid + query API)
-  food.py          - FoodField (per-tile food + regen + forage search)
-  hud.py           - bottom-left card: population, belief, tier pips, hunger bar
+  food.py          - FoodField (per-tile food + regen + forage + effect folding)
+  hud.py           - bottom-left card + pool bar + cooldown row + scripture log
+  powers.py        - PowerKind, PowerSpec, PowerSystem, dispatch, ActiveEffect
+  rhetoric.py      - JSON pool loader + weighted voice-mode picker
 tests/
   test_world.py    - 8 tests
   test_citizen.py  - 11 tests
   test_belief.py   - 15 tests
   test_food.py     - 20 tests
+  test_powers.py   - 20 tests (P3 PR1)
+rhetoric.json      - scripture-log line pool keyed on (power, god, voice_mode)
 config.toml        - all tunable parameters
 entry.py           - PyInstaller bootstrap
 start.cmd          - Windows: activate venv + run

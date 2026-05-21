@@ -3,16 +3,20 @@
 The Renderer interface is intentionally narrow so a future VectorRenderer
 can be dropped in without touching world/camera/main code. Implementations
 share the same `build_world_surface`, `blit_viewport`, `blit_citizens`,
-`blit_belief_overlay`, and `blit_food_overlay` contract.
+`blit_belief_overlay`, `blit_food_overlay`, and (P3) `blit_cast_preview`
+contract.
 """
 from __future__ import annotations
 import abc
 import pygame
 import numpy as np
-from typing import Iterable
+from typing import Iterable, Optional, TYPE_CHECKING
 from .world import World, Tile
 from .config import RenderConfig
 from .citizen import Citizen, CitizenState, Facing
+
+if TYPE_CHECKING:
+    from .powers import PowerSpec
 
 
 PIXEL_PALETTE: dict[Tile, tuple[tuple[int, int, int],
@@ -46,6 +50,17 @@ BELIEF_TINT: dict[int, tuple[int, int, int]] = {
 # Food overlay: a single yellow-green tint scaled by food/global_max.
 FOOD_TINT: tuple[int, int, int] = (110, 200, 80)
 
+# Per-power AoE tint for the cast preview.
+PREVIEW_TINT_BY_KIND: dict[int, tuple[int, int, int]] = {
+    0:  (200, 200, 240),    # INSPIRE   - pale blue
+    1:  (200, 220, 220),    # CALM      - off-white
+    2:  (200, 120, 120),    # HUNGER_PANG - dim red
+    10: (200, 170, 80),     # RAISE     - amber
+    11: (130, 90, 60),      # LOWER     - brown
+    12: (110, 200, 80),     # BLESS     - green
+    13: (200, 100, 80),     # CURSE     - red
+}
+
 
 class Renderer(abc.ABC):
     def __init__(self, cfg: RenderConfig):
@@ -78,6 +93,11 @@ class Renderer(abc.ABC):
     @abc.abstractmethod
     def blit_food_overlay(self, screen: pygame.Surface, food,
                            cam_x: float, cam_y: float) -> None: ...
+
+    @abc.abstractmethod
+    def blit_cast_preview(self, screen: pygame.Surface, spec: "PowerSpec",
+                           tx: int, ty: int, ok: bool, reason: str,
+                           cam_x: float, cam_y: float, font) -> None: ...
 
 
 class PixelRenderer(Renderer):
@@ -317,6 +337,72 @@ class PixelRenderer(Renderer):
         ts = self.cfg.tile_size
         return pygame.transform.scale(small,
                                        (food.world_w * ts, food.world_h * ts))
+
+    # -- cast preview (P3) -------------------------------------------------
+
+    def blit_cast_preview(self, screen: pygame.Surface, spec,
+                           tx: int, ty: int, ok: bool, reason: str,
+                           cam_x: float, cam_y: float, font) -> None:
+        """Paint the AoE circle + status chip for the active power mode.
+
+        Coordinates are world tiles. Caller passes the mouse-to-tile
+        result. Renderer composes a transparent overlay so it doesn't
+        require the world surface.
+        """
+        ts = self.cfg.tile_size
+        vw, vh = self.cfg.viewport_w, self.cfg.viewport_h
+
+        # Tile -> screen pixel (centre of tile).
+        sx = int(tx * ts - cam_x + ts // 2)
+        sy = int(ty * ts - cam_y + ts // 2)
+
+        # AoE radius in screen pixels (point targets get a single-tile pip).
+        rpx = max(ts // 2, spec.aoe_radius * ts)
+
+        # Tint by kind. Status colour: green ok, amber cooling, red blocked.
+        tint = PREVIEW_TINT_BY_KIND.get(int(spec.kind), (200, 200, 200))
+        if ok:
+            border = (110, 230, 110)
+        elif reason.startswith("cooling"):
+            border = (220, 170, 60)
+        else:
+            border = (220, 90, 80)
+
+        # Overlay surface for the alpha circle.
+        ov = pygame.Surface((rpx * 2 + 6, rpx * 2 + 6), pygame.SRCALPHA)
+        pygame.draw.circle(ov, (*tint, 70), (rpx + 3, rpx + 3), rpx)
+        pygame.draw.circle(ov, (*border, 220), (rpx + 3, rpx + 3), rpx, width=2)
+        # Crosshair pip at the centre tile.
+        pygame.draw.rect(
+            ov, (*border, 200),
+            pygame.Rect(rpx + 3 - ts // 2, rpx + 3 - ts // 2, ts, ts),
+            width=1,
+        )
+        screen.blit(ov, (sx - rpx - 3, sy - rpx - 3))
+
+        # Status chip: "BLESS  10b  4.0s   need T2" near the cursor.
+        chip_lines = []
+        chip_lines.append(f"{spec.name.upper()}  {spec.belief_cost:.0f}b  {spec.cooldown:.1f}s")
+        if reason:
+            chip_lines.append(reason)
+
+        # Render chip with parchment text on a dark pad.
+        pad_x = 6; pad_y = 4
+        line_h = font.get_linesize()
+        text_surfs = [font.render(s, True, (216, 201, 168)) for s in chip_lines]
+        chip_w = max((s.get_width() for s in text_surfs), default=0) + pad_x * 2
+        chip_h = sum(s.get_height() for s in text_surfs) + pad_y * 2
+
+        chip_x = min(max(sx + 14, 0), vw - chip_w)
+        chip_y = min(max(sy + 14, 0), vh - chip_h)
+        chip_bg = pygame.Surface((chip_w, chip_h), pygame.SRCALPHA)
+        chip_bg.fill((10, 10, 16, 220))
+        pygame.draw.rect(chip_bg, (*border, 220), chip_bg.get_rect(), width=1)
+        screen.blit(chip_bg, (chip_x, chip_y))
+        oy = chip_y + pad_y
+        for s in text_surfs:
+            screen.blit(s, (chip_x + pad_x, oy))
+            oy += s.get_height()
 
 
 def make_renderer(cfg: RenderConfig) -> Renderer:

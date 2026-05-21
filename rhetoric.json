@@ -1,0 +1,155 @@
+{
+  "_comment": "Densitas scripture pool. Keys: power -> god -> voice_mode -> [lines]. P3 PR1 ships the Open Eye block; Maw lines arrive with P4. Voice modes from GDD §10. Weights 70/20/10 (consecration / doctrinal / ritual).",
+
+  "inspire": {
+    "open_eye": {
+      "consecration": [
+        "A hand turns the wanderer toward the dawn.",
+        "The eye looked upon them; they walked.",
+        "The path is named. The faithful step.",
+        "One among the multitude lifts their face."
+      ],
+      "doctrinal": [
+        "No step is unobserved. No step is unled.",
+        "Where the Witness looks, the road is."
+      ],
+      "ritual": [
+        "The priests light the lantern at the threshold.",
+        "A bell rings once. The wanderer hears it."
+      ]
+    }
+  },
+
+  "calm": {
+    "open_eye": {
+      "consecration": [
+        "The cry softens. The shoulders settle.",
+        "A breath returns to those who had forgotten it.",
+        "The flock is gathered without a word."
+      ],
+      "doctrinal": [
+        "Panic is the absence of the Witness; the Witness returns."
+      ],
+      "ritual": [
+        "The elders pass among them with cool hands."
+      ]
+    }
+  },
+
+  "hunger_pang": {
+    "open_eye": {
+      "consecration": [
+        "An old need wakes in the unbelievers.",
+        "Their belly remembers what their faith forgot.",
+        "The Other's children grow restless."
+      ],
+      "doctrinal": [
+        "The Witness sees the body before the body sees itself."
+      ],
+      "ritual": [
+        "The priests do nothing. The lesson is enough."
+      ]
+    }
+  },
+
+  "raise": {
+    "open_eye": {
+      "consecration": [
+        "The ground itself takes the shape of our will.",
+        "Stone remembers what it was asked to be.",
+        "The earth rises to meet the faithful.",
+        "A high place is given. A high place is made."
+      ],
+      "doctrinal": [
+        "What the Witness lifts, no rival flattens easily.",
+        "The shape of the land is the shape of the prayer."
+      ],
+      "ritual": [
+        "The masons lay no stone; the land lays itself."
+      ]
+    }
+  },
+
+  "lower": {
+    "open_eye": {
+      "consecration": [
+        "The ground gives way before the Witness.",
+        "A road of water is opened for those who must drown.",
+        "The earth bows; the unfaithful learn its weight."
+      ],
+      "doctrinal": [
+        "What was high was always provisional."
+      ],
+      "ritual": [
+        "The priests mark the new shore at noon."
+      ]
+    }
+  },
+
+  "bless": {
+    "open_eye": {
+      "consecration": [
+        "The field returns the labour of the faithful, doubled.",
+        "The grain hears its name and answers.",
+        "A green light passes over the furrows.",
+        "The land is told it is loved."
+      ],
+      "doctrinal": [
+        "Abundance is the natural state of the well-watched."
+      ],
+      "ritual": [
+        "The elders walk the perimeter at first light."
+      ]
+    }
+  },
+
+  "curse": {
+    "open_eye": {
+      "consecration": [
+        "The Other's furrows forget how to bear.",
+        "A grey hand passes over their fields.",
+        "The grain there is given a smaller word.",
+        "The land remembers no rival."
+      ],
+      "doctrinal": [
+        "What is not blessed is not, in time, sustained."
+      ],
+      "ritual": [
+        "The priests turn their backs and walk on."
+      ]
+    }
+  },
+
+  "relic_placed": {
+    "open_eye": {
+      "consecration": [
+        "{relic_name} is set among the faithful.",
+        "{relic_name} comes to rest. The valley brightens.",
+        "{relic_name} chooses this ground."
+      ],
+      "doctrinal": [
+        "Where the Witness stands, the people gather."
+      ],
+      "ritual": [
+        "The chosen carry {relic_name} in silence."
+      ]
+    }
+  },
+
+  "relic_shattered": {
+    "open_eye": {
+      "consecration": [
+        "{relic_name} fails. The Other reached even here.",
+        "{relic_name} breaks. We were not enough.",
+        "{relic_name} is taken; the valley darkens."
+      ],
+      "doctrinal": [
+        "A relic shattered is a sermon unfinished.",
+        "What the Witness loses, the Witness will remember."
+      ],
+      "ritual": [
+        "The faithful kneel where {relic_name} stood and do not speak."
+      ]
+    }
+  }
+}

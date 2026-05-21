@@ -1,3 +1,37 @@
+## 2026-05-21 (P3 PR1 ship) — Powers T0–T1 + Bless/Curse
+
+P3 PR1 shipped — the player-verb layer is live.
+
+**Spec resolved (with Matthew):** §14 decisions stamped. Spring deferred to P3.5, rival-stub flag included, pool soft-cap parked as `# TODO(P5)`, counter-cast `CastReceipt` seam kept open, Curse-flight also deferred to P3.5.
+
+**What landed:**
+
+- `densitas/powers.py` (new, 17.3 KB) — `PowerKind`, frozen `PowerSpec` registry, `ActiveEffect`, `ScriptureEntry`, `CastReceipt`, `PowerSystem` (pool / cooldowns / effects / scripture log). Dict-of-callables dispatch table — each new power kind is one registration line. `effective_food_regen()` folds Bless/Curse multipliers on top of base regen.
+- `densitas/rhetoric.py` (new) + `rhetoric.json` (4.3 KB) — JSON pool keyed on `(power, god, voice_mode)`. Weighted mode rotation (70/20/10) + no-immediate-repeat. Open Eye lines for Inspire/Calm/HungerPang/Bless/Curse/Raise/Lower/relic_placed/relic_shattered; Maw lines deferred to P4.
+- `densitas/food.py` — `recompute(dt, effects=None)` folds active Bless/Curse on top of base regen each tick (lazy import to break the cycle with powers.py).
+- `densitas/citizen.py` — `inspire_citizen()`, `find_nearest_other_faction()`, `spawn_rival_stub()`, `inspire_bias_until` field on Citizen so `_pick_wander_target` respects the bias until arrival or 10 sim sec.
+- `densitas/config.py` + `config.toml` — `PowerConfig` + `RelicConfig`, `[powers]` and `[powers.relic]` blocks. `k_tier` parsed list→tuple.
+- `densitas/render.py` — `blit_cast_preview()` (abstract + pixel impl). AoE circle + colour-tinted status chip (green ready / amber cooling / red blocked).
+- `densitas/hud.py` — pool bar replaces the old static total readout; cooldown row with 7 power icons (greyed if tier-locked, amber numeric countdown if cooling, accent-coloured if ready, parchment ring if active mode); scripture log overlay top-right with 6-sec alpha fade.
+- `densitas/main.py` — number keys 1-7 select mode, LMB casts, RMB/ESC cancels. Mouse→tile via `cam + ts // ts`. Boot now wires PowerSystem and Rhetoric. `--rival-stub-seed N` spawns N faction-1 citizens at `(world.w * 3/4, world.h/2)` for live multi-faction testing before P4.
+- `tests/test_powers.py` (new, 20 tests).
+- `Densitas_P3.md` §14 — decisions stamped to "Resolved".
+
+**Bugs caught in smoke that didn't reach the tests:**
+
+- Off-by-one in `f"need T{spec.tier}"` reason string — display tier is `spec.tier - 1` because tier_for indexes 1=T0.
+- Same off-by-one in `k_tier[spec.tier]` indexing — `k_tier` is 0..4 over T0..T4, so `kt_idx = max(0, min(len-1, spec.tier - 1))`.
+
+Both caught and fixed before staging. test_14 (concrete-reason strings) and test_04 (need-T1 display) would have caught these on first run; the smoke test caught them first.
+
+**Test results:** 74/74 pass (8 P0 + 11 P1 + 15 P2 + 20 P1.5 + 20 P3). Headless main.main() boots, allocates everything, exits clean.
+
+**Files staged via atomic-rename through /tmp:** all 10 (powers.py, rhetoric.py, rhetoric.json, food.py, citizen.py, config.py, config.toml, render.py, hud.py, main.py) + test_powers.py + Densitas_P3.md §14 patch. Each SHA-verified after sync.
+
+**Up next (PR2):** Raise/Lower terrain. World tile + heightmap mutation, FoodField cap/regen recomputed from new biome, world-surface tile repaint, drown rule for newly-water tiles. Tests 12-15 from spec §12.
+
+---
+
 # Densitas — Worklog
 
 ## 2026-05-20 — initial design session

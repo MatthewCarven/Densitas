@@ -47,7 +47,7 @@ recompute_hz      = 5
 overlay_alpha_max = 180
 
 [food]
-# P1.5 - tuned 2026-05-21 for ~2000 citizen equilibrium on the default map.
+# P1.5 - tuned 2026-05-21 for ~700-1000 citizen equilibrium on the default map.
 # Carrying-capacity math: N_eq = total_regen_per_sec / hunger_rate.
 hunger_rate             = 0.05    # 1/sim_sec -> full->starving in 20 sim sec
 forage_threshold        = 0.40    # hunger above this -> FORAGE
@@ -73,3 +73,41 @@ hill_initial      = 0.30
 hill_regen        = 0.002
 holy_initial      = 0.15
 holy_regen        = 0.001
+
+[powers]
+# P3 PR1 — Powers T0–T1.
+belief_regen_per_citizen = 0.02   # pool gain per citizen per sim sec
+k_tier                   = [0.5, 1.0, 4.0, 20.0, 80.0]  # tier 0..4 strength divisors
+rhetoric_fade_seconds    = 6.0    # scripture log entries fade after this
+scripture_log_max        = 32     # hard cap on retained entries
+
+# Cooldowns (sim seconds)
+inspire_cooldown      = 1.5
+calm_cooldown         = 1.5
+hunger_pang_cooldown  = 3.0
+raise_cooldown        = 2.0
+lower_cooldown        = 2.0
+bless_cooldown        = 4.0
+curse_cooldown        = 4.0
+
+# Effect multipliers
+bless_multiplier      = 2.0
+curse_multiplier      = 0.2
+effect_duration_t1    = 30.0
+
+# AoE radii (tiles)
+inspire_radius        = 4
+hunger_pang_radius    = 0
+bless_radius          = 4
+curse_radius          = 4
+
+[powers.relic]
+# PR3 lands the relic state machine — config block is here now so the
+# schema is stable.
+amplitude            = 20.0
+place_cooldown       = 30.0
+shatter_ratio        = 1.5
+shatter_time         = 8.0
+attract_radius       = 8
+attract_probability  = 0.4
+initial_count        = 3

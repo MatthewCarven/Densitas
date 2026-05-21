@@ -1,7 +1,8 @@
 """Citizen - autonomous inhabitants of the world.
 
 Implements the state machine described in `Densitas_citizens.md` (P1) and
-extended for food in `Densitas_food.md` (P1.5).
+extended for food in `Densitas_food.md` (P1.5) and powers in
+`Densitas_P3.md` (P3).
 
 Design notes:
 - Citizens are NEVER directly selected by the player.
@@ -14,6 +15,12 @@ P1.5 brings carrying capacity into the simulation. Citizens get hungry,
 forage from food-bearing tiles, eat in place, and starve when food runs
 out. Reproduction is gated on hunger so a famine self-throttles the
 population long before exponential growth swamps the map.
+
+P3 PR1 adds two CitizenManager hooks the PowerSystem calls:
+  * `inspire_citizen` — pre-empt one citizen's wander target.
+  * `find_nearest_other_faction` — Hunger-Pang dispatch helper.
+  * `spawn_rival_stub(seed, n)` — debug-flag entry point for live-play
+    testing of multi-faction codepaths before P4.
 """
 from __future__ import annotations
 import enum
@@ -101,6 +108,8 @@ class Citizen:
     # --- P1.5 additions ---
     hunger:    float = 0.0    # 0.0 fed -> 1.0 starving
     food_carried: int = 0     # P1.5 unused; reserved for future inventory tier
+    # --- P3 PR1 additions ---
+    inspire_bias_until: float = -1.0  # sim_t below which the citizen pursues an Inspire target
 
 
 class CitizenManager:
@@ -119,6 +128,8 @@ class CitizenManager:
         self._next_id: int = 0
         self.citizens: list[Citizen] = []
         self._spawn_initial(world)
+        # Sim clock — written by tick() and read by inspire_bias logic.
+        self._sim_t: float = 0.0
 
     # -- public API ---------------------------------------------------------
 
@@ -166,6 +177,7 @@ class CitizenManager:
         `food` is optional (P1 backward-compat): when None, hunger and
         forage/eating are disabled and the manager behaves as in P1.
         """
+        self._sim_t += dt
         new_citizens: list[Citizen] = []
         dead_idx: list[int] = []
         cfg = self.cfg
@@ -319,6 +331,10 @@ class CitizenManager:
                 dy = c.target_y - c.y
                 if dx * dx + dy * dy < 0.25:
                     c.state = CitizenState.IDLE
+                    # End-of-bias: once the citizen reaches the inspired
+                    # target, the bias is consumed regardless of timer.
+                    if c.inspire_bias_until > 0.0:
+                        c.inspire_bias_until = -1.0
                 continue
 
         # Apply births and deaths.
@@ -330,6 +346,94 @@ class CitizenManager:
 
     def iter_for_render(self) -> Iterable[Citizen]:
         return self.citizens
+
+    # -- P3 PR1 hooks -------------------------------------------------------
+
+    def inspire_citizen(
+        self,
+        target_tx: int,
+        target_ty: int,
+        faction: int,
+        max_radius: int,
+        bias_duration: float,
+    ) -> Optional[Citizen]:
+        """Find the nearest IDLE/WANDER citizen of `faction` within
+        `max_radius` tiles of (target_tx, target_ty) and pre-empt their
+        wander target. Returns the citizen affected, or None if none in
+        range (which is a dispatch failure for the caller).
+
+        Bias persists until `self._sim_t + bias_duration` or arrival.
+        """
+        best_idx: Optional[int] = None
+        best_d2: float = float("inf")
+        eligible = (CitizenState.IDLE, CitizenState.WANDER)
+        for i, c in enumerate(self.citizens):
+            if c.faction != faction or c.state not in eligible:
+                continue
+            dx = c.x - target_tx
+            dy = c.y - target_ty
+            d2 = dx * dx + dy * dy
+            if d2 > max_radius * max_radius:
+                continue
+            if d2 < best_d2:
+                best_d2 = d2
+                best_idx = i
+        if best_idx is None:
+            return None
+        c = self.citizens[best_idx]
+        c.target_x = float(target_tx) + 0.5
+        c.target_y = float(target_ty) + 0.5
+        c.state = CitizenState.WANDER
+        c.inspire_bias_until = self._sim_t + bias_duration
+        return c
+
+    def find_nearest_other_faction(
+        self, tx: int, ty: int, my_faction: int, radius: int,
+    ) -> Optional[Citizen]:
+        """Used by Hunger-Pang. Returns nearest non-`my_faction`,
+        non-DYING citizen within radius, or None."""
+        best: Optional[Citizen] = None
+        best_d2 = float("inf")
+        r2 = radius * radius
+        for c in self.citizens:
+            if c.faction == my_faction or c.state == CitizenState.DYING:
+                continue
+            dx = c.x - tx
+            dy = c.y - ty
+            d2 = dx * dx + dy * dy
+            if d2 > r2 or d2 >= best_d2:
+                continue
+            best = c
+            best_d2 = d2
+        return best
+
+    def spawn_rival_stub(self, world: World, n: int, faction: int = 1,
+                          seed: int = 0) -> int:
+        """Debug-flag entry point. Spawn `n` rival-faction citizens at the
+        canonical stub location: 3/4 across, mid-height. Returns the
+        number actually placed (some attempts land on unwalkable tiles).
+
+        Used by `python -m densitas.main --rival-stub-seed N`.
+        """
+        rng = np.random.default_rng(seed ^ 0xABCDEF)
+        cx = (world.width * 3) // 4
+        cy = world.height // 2
+        r = self.cfg.spawn_radius_tiles
+        placed = 0
+        attempts = 0
+        max_attempts = n * 50
+        while placed < n and attempts < max_attempts:
+            attempts += 1
+            x = int(rng.integers(max(0, cx - r), min(world.width, cx + r)))
+            y = int(rng.integers(max(0, cy - r), min(world.height, cy + r)))
+            if not _walkable(world, x, y):
+                continue
+            self.citizens.append(self._make_citizen(
+                faction=faction, x=x + 0.5, y=y + 0.5,
+                age=self._initial_age(),
+            ))
+            placed += 1
+        return placed
 
     # -- internals ----------------------------------------------------------
 
@@ -397,9 +501,18 @@ class CitizenManager:
             state_timer=0.0,
             hunger=self._initial_hunger(),
             food_carried=0,
+            inspire_bias_until=-1.0,
         )
 
     def _pick_wander_target(self, c: Citizen, world: World) -> tuple[float, float]:
+        # P3 PR1: respect Inspire bias. If the citizen has been inspired and the
+        # bias hasn't timed out, keep the existing target.
+        if c.inspire_bias_until > self._sim_t:
+            return c.target_x, c.target_y
+        if c.inspire_bias_until > 0.0 and c.inspire_bias_until <= self._sim_t:
+            # Bias expired — clear and continue with normal wander.
+            c.inspire_bias_until = -1.0
+
         r = self.cfg.wander_radius
         for _ in range(8):
             dx = float(self._rng.integers(-r, r + 1))

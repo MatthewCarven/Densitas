@@ -71,6 +71,45 @@
 - [x] Tuning playtest at 30 sim min. Equilibrium ~700-1000 on default seed.
 - [x] `food_carried: int = 0` inventory hook on Citizen (unused in P1.5; reserved for future).
 
+## Prototype P3 PR1 — Powers T0 + Bless/Curse (SHIPPED 2026-05-21)
+- [x] P3 spec doc (`Densitas_P3.md`). Spec §14 decisions resolved.
+- [x] `PowerSystem` — pool, cooldowns, effects, scripture log, dispatch table.
+- [x] T0 Inspire (real), Calm (stub), Hunger Pang (rival-faction stub).
+- [x] T1 Bless / Curse — active-effect machinery; food.recompute folds multipliers.
+- [x] Rhetoric module + `rhetoric.json` (Open Eye lines for 7 powers + 2 relic events).
+- [x] Cast preview render (AoE circle + status chip with green/amber/red tint).
+- [x] HUD pool bar replaces static total; cooldown row with 7 power icons; scripture log overlay.
+- [x] Input bindings (1-7 mode select, LMB cast, RMB/ESC cancel).
+- [x] `--rival-stub-seed N` debug flag for live multi-faction testing.
+- [x] Config schema (`[powers]` and `[powers.relic]` blocks).
+- [x] 20 P3 tests (74 total in suite, all pass).
+- [x] `CastReceipt` seam left open for P5 counter-cast partial-cancel.
+
+## Prototype P3 PR2 — Raise / Lower terrain
+- [ ] `densitas/world.py :: mutate_tile(world, food, repaint_cb, tx, ty, new_tile)`.
+- [ ] `Renderer.repaint_tile(world_surface, world, tx, ty)` — abstract + pixel impl.
+- [ ] PowerSystem `_dispatch_raise` / `_dispatch_lower` call into mutate_tile (currently stubbed in PR1 — `_mutate_tile=None`).
+- [ ] Heightmap update — bump `world.heightmap[ty, tx]` by `±0.18` per rank.
+- [ ] Food field cap+regen recomputed from biome for the new tile.
+- [ ] Drown rule — citizens on a newly-unwalkable tile transition to DYING.
+- [ ] Tests 12-15 from spec §12.
+
+## Prototype P3 PR3 — Religious Relics
+- [ ] `densitas/relics.py` — `Relic`, `RelicManager`, `RelicState` (AVAILABLE/PLACED/SHATTERED).
+- [ ] `BeliefField.recompute(citizens, relics=None, sim_t=0.0)` + `_scatter_relics` with linear fade-in over place_cooldown.
+- [ ] Citizen attractor list + `_pick_wander_target` integration (~40% probability, hunger trumps).
+- [ ] Shatter rule: rival belief > 1.5x player belief sustained for 8 sec at the tile.
+- [ ] Tray UI in HUD (3 slots; AVAILABLE/PLACED/SHATTERED states).
+- [ ] `R` / `Shift+R` mode select; click to place/move/retrieve.
+- [ ] `blit_relics(screen, relics, cam_x, cam_y)` using the existing `Densitas_relic_glyphs_v1.html` glyphs.
+- [ ] 10 P3 PR3 tests (spec §12 #19-28).
+
+## Prototype P3.5 — Spring + Curse-flight
+- [ ] Spring (T1) — fresh-water tile sub-type increasing adjacent carrying capacity.
+- [ ] Curse-citizen-flight — citizens in cursed land flee outward (overlaps with future FLEE state).
+- [ ] Pool soft cap (`5000 + 10 * pop`) if banking has become trivial by then.
+- [ ] Density-bonus regen factor for the belief pool (peak/avg ratio).
+
 ## Prototype P2.5 — Fog of war
 - [ ] Per-god visibility grid; recompute on relic move and citizen move.
 - [ ] Render unseen tiles dimmed; render last-known rival positions as ghost dots.
