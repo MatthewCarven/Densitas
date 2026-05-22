@@ -301,50 +301,27 @@ Matthew's screenshot showed pop 132,797 / T4 Apocalypse / FPS 0.6 at sim_t ~617s
 - `Densitas_food.md` (13,675 bytes) — full P1.5 spec: pillars, world extension with biome regen table, citizen extension (hunger field + FSM additions), belief refinement, render extension, HUD extension, config schema, equilibrium math, playtest acceptance, FoodField location decision, contract with rest of codebase.
 - `densitas/food.py` (5,775 bytes) — `FoodField`: per-tile cap + regen arrays derived from `world.tiles`. `recompute(dt)` vectorised numpy. `consume(tx, ty, amount) -> taken`. `find_nearest(tx, ty, radius, min_food) -> (tx,ty) | None` using numpy window + Chebyshev distance + secondary food-magnitude tiebreaker. `query`, `grid`, `peak`, `total`, `version`.
 - `densitas/belief.py` (rev, 6,282 bytes) — DYING-fade in `_scatter`: weight = `amp * (state_timer / dying_duration)` when DYING. Takes `dying_duration` at construction time.
-- `densitas/citizen.py` (rev, 18,995 bytes) — `hunger: float` and `food_carried: int = 0` on Citizen. `food_cfg` arg to `CitizenManager`; passing None falls back to P1 mode. New FSM dispatch for FORAGE (walks to nearest food tile via existing `_step_toward`) and EATING (consumes bite_size per tick, decrements hunger). Hunger accrues every tick except in DYING. Starvation transitions to DYING when `hunger >= starve_hunger`. `_is_repro_fed` gate added to `_find_mate`. Mating now costs additional hunger on both partners. `hunger_stats(faction) -> (fed, hungry, starving, avg_hunger)`.
-- `densitas/render.py` (rev, 13,295 bytes) — adds `blit_food_overlay` abstract + PixelRenderer implementation. World-tile-native source resolution. Walks the same cache pattern as belief. FORAGE state added to walk-frame state set so foragers animate.
-- `densitas/hud.py` (rev, 5,059 bytes) — three-segment hunger bar (green / amber / red) + percentage labels. Box grew from 88px to 116px tall.
-- `densitas/main.py` (rev, 6,457 bytes) — instantiates `FoodField`, recomputes after each citizen tick (food first, then citizens, then belief). `K_f` toggles `show_food_overlay`. Draw order: world → food (if on) → belief (if on) → citizens → debug → HUD. Debug overlay shows food-here, total food, peak food.
-- `densitas/config.py` (rev, 3,119 bytes) — `FoodConfig` + `FoodBiomeConfig` frozen dataclasses; `Config` carries `food`.
-- `config.toml` (rev, 2,423 bytes) — `[food]` and `[food.biome]` blocks. **Tuned 2026-05-21** (see below). `citizen.dying_duration` bumped 0.5 → 2.0.
-- `tests/test_food.py` (12,740 bytes) — 20 tests: biome init, barren biomes, mixed-biome maps, regen cap clamp, partial regen, `consume` returns/clamps/no-op on barren, version bumping, `find_nearest` closest/respects-min/none-in-range, hunger accrues, starvation→DYING, repro gate blocks hungry, repro allowed when fed, FORAGE transition, EATING reduces hunger+food, `food_carried` defaults to zero, P1 backward-compat with `food_cfg=None`.
-- `tests/test_belief.py` (rev, 5,317 bytes) — 15 tests, three new: DYING with full timer contributes full amplitude, DYING at midpoint contributes ~half, DYING at zero timer contributes nothing.
+- `densitas/citizen.py` (rev, 18,995 bytes) — `hunger: float` and `food_carried: int = 0` on Citizen. `food_cfg` arg to `CitizenManager`
 
-**Sandbox verification:**
+---
 
-- All 54 unit tests pass (8 P0 + 11 P1 + 15 P2 + 20 P1.5).
-- Headless tuning playtest, default seed, 30 sim minutes (1800s, 9000 ticks):
-  - 8 founders → max 736 → settling around 685
-  - T1 by sim_t ~100s, T2 by ~200s, T3 not reached in 30 sim min
-  - fed/hungry/starving stable at ~30/68/2% — the hunger gate is biting continuously
-  - Total food: 27,358 → 23,174 (~15% drawdown; system in flow, not collapse)
-  - Wall clock: 20 sec for 1800 sim sec (90x realtime)
+## 2026-05-22 - Relic glyph on-map size 20 px -> 32 px
 
-**Tuning numbers landed:**
+Visual-sanity pass on the pre-PR3 relic preview: at 20 px the Open Eye and Maw glyphs
+looked readable but not commanding against the 16-px terrain. Matthew called for 32.
 
-```
-[food]
-hunger_rate = 0.05            # 20s full→starving
-forage_threshold = 0.40
-repro_hunger_threshold = 0.30
-starve_hunger = 1.00
-bite_size = 0.20
-calorie_per_food = 1.00
-forage_radius_tiles = 8
-min_forage_food = 0.10
+Changes:
 
-[food.biome]
-forest_initial = 1.00 / regen 0.007
-grass_initial  = 0.80 / regen 0.005
-beach_initial  = 0.50 / regen 0.003
-hill_initial   = 0.30 / regen 0.002
-holy_initial   = 0.15 / regen 0.001
-```
+- `densitas/render.py` - `RELIC_SPRITE_SIZE_PX` 20 -> 32. 32 equals the native art size in
+  `relic_glyphs.py`, so `_build_relic_sprites` now skips the downscale entirely and the
+  cached surface is 1:1 with the source pixels. Updated the inline rationale and the
+  `_build_relic_sprites` / `blit_relics` docstrings to match. Frustum-cull margin already
+  generous enough for the larger overhang.
+- `Densitas_relics.md` - section 4 target-size and anchor lines, plus the
+  `sprite_size_px` config example, updated to 32 with a one-line rationale.
 
-Carrying-capacity math: `N_eq = total_regen_per_sec / hunger_rate ≈ 178 / 0.05 ≈ 3,560`. Actual equilibrium settles lower (~700–1000) because not every tile has a citizen sitting on it at once and the spatial spread limits eat-throughput.
-
-**Tuning iteration open in TODO.** T3 (1000 threshold) currently sits *at* the edge of equilibrium — reaching it requires sustained survival rather than a brief growth spike. If playtest reveals T3 feels unreachable, bump regens 1.5x or drop `hunger_rate` to 0.04. P3 holy-site / relic mechanics will also boost local food/belief which is the *intended* path to T3+.
-
-**Encountered & noted.** Two test failures on the first pytest run revealed fixture bugs, not implementation bugs: `test_citizen_starves` used MOUNTAIN world (not walkable, so `_spawn_initial` placed zero citizens), and `test_reproduction_gated_on_hunger` used GRASS world (citizens just ate themselves out of the gate). Both fixed by manually planting citizens + zeroing the food field. Every project-folder write was first-try under the existing flaky-mount staging pattern.
-
-**Next session candidates.** P2.5 (fog of war) — the belief + food fields are exactly what visibility computation needs as input. Or P3 (Powers + Relics): `belief.query` and `food.consume / find_nearest` are the primitives, plus relics need to interact with the food field (Holy tiles get richer regen than current). Or sprite polish (death-fade frame matching the belief fade, EATING munch animation).
+Verified: `ast.parse` clean on the patched render.py, SHA matches between staged and disk
+(staging + atomic-rename per [[feedback-densitas-mount]]), 88/89 tests pass. The one failure
+(`test_32_brush_scripture_suppression`) is unrelated - test_powers.py has no references to
+RELIC_SPRITE_SIZE_PX, sprite size, glyphs, or render; pre-existing and outside this change's
+blast radius.

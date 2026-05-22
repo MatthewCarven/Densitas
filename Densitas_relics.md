@@ -129,8 +129,8 @@ Considered and rejected. It adds a second input modality, breaks the keyboard-fi
 `Renderer.blit_relics(screen, relics, cam_x, cam_y, sim_t)` — new abstract method, pixel impl in `PixelRenderer`.
 
 * **Sprite source.** The 7 glyph designs in `Densitas_relic_glyphs_v1.html` are pre-rasterized at game start into a sprite atlas keyed by relic id. (Glyphs 1-3 = Open Eye, 4-6 = Maw, 7 reserved for the future T3 unlock.)
-* **Target size.** 20 px square (mid-band of the 16-24 px range from the TODO). Renders at 1:1 on the default zoom; `pygame.transform.scale` nearest-neighbour at other zooms (per the camera-zoom backlog item; relics inherit the same scale path as citizens).
-* **Anchor.** Bottom-centred on the tile, matching citizen sprite anchor. The 20×20 sprite sits on tile `(tx, ty)` with its base aligned to the tile's bottom edge in screen space.
+* **Target size.** 32 px square (revised 2026-05-22 from the original 20 px mid-band). After a visual-sanity pass against the chunky 16-px terrain, 20 px read as small/easily-lost; 32 matches the native glyph art (no downscale) and reads as a commanding ~2-tile-tall icon. Renders at 1:1 on the default zoom; `pygame.transform.scale` nearest-neighbour at other zooms (per the camera-zoom backlog item; relics inherit the same scale path as citizens).
+* **Anchor.** Bottom-centred on the tile, matching citizen sprite anchor. The 32×32 sprite sits on tile `(tx, ty)` with its base aligned to the tile's bottom edge in screen space.
 * **Depth.** Drawn *after* the world surface and *before* citizens, so citizens walk visibly over a relic's base but never disappear behind it. The relic's top-half overlaps citizens in the same tile only when the citizen is north of the relic — minor, acceptable.
 * **Fade-in pulse.** During the `place_cooldown` window (default 30 sim_sec after place/move), the sprite's alpha pulses gently: `alpha = 160 + 64 * sin(2π * sim_t / 1.5)`, clamped. This visually signals "not yet at full belief amplitude." After cooldown, alpha is solid 255.
 * **Threat overlay.** When `threat_timer > 0`, a thin red ring is drawn around the sprite. Ring opacity = `threat_timer / shatter_time`. Full ring = imminent shatter.
@@ -407,7 +407,7 @@ attract_probability = 0.4
 initial_count       = 3
 
 [render.relic]
-sprite_size_px      = 20     # 16-24 range; 20 is the chosen mid-band
+sprite_size_px      = 32     # revised 2026-05-22 from the 20-px mid-band; matches native glyph art
 tray_position       = "bottom-right"
 tray_layout         = "horizontal"
 summary_panel_seconds = 10.0  # auto-dismiss timer

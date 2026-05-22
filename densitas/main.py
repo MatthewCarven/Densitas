@@ -24,6 +24,7 @@ but only takes effect in Raise/Lower.
 from __future__ import annotations
 import sys
 import time
+import types
 from typing import Optional
 
 import pygame
@@ -53,7 +54,7 @@ POWER_KEYS: dict[int, PowerKind] = {
 
 
 def parse_args(argv: list[str]) -> dict:
-    """Tiny arg parser — argparse would be overkill for one flag."""
+    """Tiny arg parser - argparse would be overkill for one flag."""
     out = {"rival_stub_seed": 0}
     i = 1
     while i < len(argv):
@@ -69,7 +70,7 @@ def parse_args(argv: list[str]) -> dict:
         if a in ("--help", "-h"):
             print(__doc__)
             sys.exit(0)
-        # Skip unknowns silently — pygame.main might inherit argv.
+        # Skip unknowns silently - pygame.main might inherit argv.
         i += 1
     return out
 
@@ -112,7 +113,7 @@ def main(argv: list[str] | None = None) -> int:
                                   food_cfg=cfg.food)
     print(f"  spawned {len(citizen_mgr.citizens)} citizens")
 
-    # P3 — optional rival stub for live testing of multi-faction codepaths.
+    # P3 - optional rival stub for live testing of multi-faction codepaths.
     if args["rival_stub_seed"] > 0:
         placed = citizen_mgr.spawn_rival_stub(
             world, n=args["rival_stub_seed"],
@@ -136,11 +137,11 @@ def main(argv: list[str] | None = None) -> int:
 
     print("Wiring power system...")
 
-    # P3 PR2 — terrain mutation callback. Closes over world / food / renderer
+    # P3 PR2 - terrain mutation callback. Closes over world / food / renderer
     # / world_surface / citizen_mgr so PowerSystem doesn't have to know about
-    # any of them. The drown rule (spec §5.3) runs here, *after* the world /
-    # food / surface have been updated — so the belief field on the next
-    # tick sees both the new tile and the now-DYING citizens.
+    # any of them. The drown rule (spec section 5.3) runs here, *after* the
+    # world / food / surface have been updated - so the belief field on the
+    # next tick sees both the new tile and the now-DYING citizens.
     def _mutate_tile_cb(tx: int, ty: int, new_tile: int) -> bool:
         def _repaint(w, tx_, ty_):
             renderer.repaint_tile(world_surface, w, tx_, ty_)
@@ -170,6 +171,21 @@ def main(argv: list[str] | None = None) -> int:
     show_debug = True
     show_belief_overlay = False
     show_food_overlay = False
+    show_relics = True   # toggle with `K` - pre-PR3 visual-sanity hook.
+
+    # Pre-PR3 hardcoded test list - six relics seeded near the spawn so we
+    # can see anchor, depth-sort with citizens, and both faction glyphs at
+    # a glance. PR3 replaces this with `RelicManager.placed_for_faction(...)`.
+    # TODO(PR3): remove once `densitas/relics.py` lands.
+    cx_, cy_ = world.width // 2, world.height // 2
+    test_relics: list = [
+        types.SimpleNamespace(faction=0, tx=cx_ - 3, ty=cy_ - 2),   # NW
+        types.SimpleNamespace(faction=0, tx=cx_ + 3, ty=cy_),       # E (in the cluster)
+        types.SimpleNamespace(faction=0, tx=cx_ - 8, ty=cy_ - 6),   # far NW (alone)
+        types.SimpleNamespace(faction=1, tx=cx_,     ty=cy_ + 4),   # rival S
+        types.SimpleNamespace(faction=1, tx=cx_ + 5, ty=cy_ + 3),   # rival SE
+        types.SimpleNamespace(faction=1, tx=cx_ + 1, ty=cy_ + 5),   # rival cluster
+    ]
     active_mode: Optional[PowerKind] = None
     # Brush size for bulk Raise/Lower (side length, so tile count = brush_size**2).
     # 1..4 -> 1, 4, 9, 16 tiles. Persists across mode switches; only effective
@@ -202,6 +218,9 @@ def main(argv: list[str] | None = None) -> int:
                     show_belief_overlay = not show_belief_overlay
                 elif event.key == pygame.K_f:
                     show_food_overlay = not show_food_overlay
+                elif event.key == pygame.K_k:
+                    # Pre-PR3: toggle the hardcoded relic test list.
+                    show_relics = not show_relics
                 elif event.key == pygame.K_c:
                     # P3-Queue: clear the queue for the current mode.
                     if active_mode in (PowerKind.RAISE, PowerKind.LOWER):
@@ -322,13 +341,19 @@ def main(argv: list[str] | None = None) -> int:
             renderer.blit_food_overlay(screen, food, cam.x, cam.y)
         if show_belief_overlay:
             renderer.blit_belief_overlay(screen, belief, cam.x, cam.y)
+        # Pre-PR3 visual-sanity slice - relics blit between the world
+        # surface (+ overlays) and citizens, so a citizen on the same
+        # tile walks visibly over the relic's base. PR3 replaces the
+        # `test_relics` list with `RelicManager.placed_for_faction(...)`.
+        if show_relics:
+            renderer.blit_relics(screen, test_relics, cam.x, cam.y, sim_time)
         renderer.blit_citizens(screen, citizen_mgr.iter_for_render(), cam.x, cam.y, sim_time)
 
         # P3-Queue: queued-cast chevrons sit above citizens, below preview.
         renderer.blit_cast_queue(screen, power_system.queues,
                                   cam.x, cam.y, cast_chip_font)
 
-        # Cast preview (P3) — draw above citizens, below HUD.
+        # Cast preview (P3) - draw above citizens, below HUD.
         if active_mode is not None and pygame.mouse.get_focused():
             mx, my = pygame.mouse.get_pos()
             tx, ty = _screen_to_tile(mx, my, cam, cfg)
@@ -381,7 +406,7 @@ def _draw_debug(screen, font, clock, cam, cfg, cm, belief, food,
     bf_here = belief.query(tile_x, tile_y, 0)
     food_here = food.query(tile_x, tile_y)
     fed, hungry, starving, avg = cm.hunger_stats(0)
-    mode_name = POWERS[active_mode].name if active_mode is not None else "—"
+    mode_name = POWERS[active_mode].name if active_mode is not None else "-"
     if active_mode in (PowerKind.RAISE, PowerKind.LOWER) and brush_size > 1:
         mode_name = f"{mode_name} brush {brush_size}x{brush_size} ({brush_size * brush_size}t)"
     pool0 = ps.pool[0]
@@ -403,7 +428,7 @@ def _draw_debug(screen, font, clock, cam, cfg, cm, belief, food,
         f"Power:  mode {mode_name}   pool f0={pool0:.1f}  f1={pool1:.1f}  effects={len(ps.effects)}",
         f"Queue:  R x {len(ps.queues.get((0, 10), [])):d} ({len(ps.queues.get((0, 10), [])) * 2.0:.1f}s)  "
         f"L x {len(ps.queues.get((0, 11), [])):d} ({len(ps.queues.get((0, 11), [])) * 2.0:.1f}s)",
-        err_line if err_line else "1-7 power - +/- brush (R/L) - LMB cast/queue - RMB cancel - C clear queue - F3 - B/F - ESC",
+        err_line if err_line else "1-7 power - +/- brush (R/L) - LMB cast/queue - RMB cancel - C clear queue - F3 - B/F/K - ESC",
     ]
     pad = 8
     line_h = font.get_linesize()

@@ -14,6 +14,10 @@ from typing import Iterable, Optional, TYPE_CHECKING
 from .world import World, Tile
 from .config import RenderConfig
 from .citizen import Citizen, CitizenState, Facing
+from .relic_glyphs import (
+    GLYPH_SIZE_PX as RELIC_GLYPH_NATIVE_PX,
+    GLYPHS_BY_FACTION as RELIC_GLYPHS_BY_FACTION,
+)
 
 if TYPE_CHECKING:
     from .powers import PowerSpec
@@ -41,6 +45,14 @@ CITIZEN_PALETTE: dict[int, tuple[tuple[int, int, int], tuple[int, int, int],
 
 CITIZEN_W = 8
 CITIZEN_H = 16
+
+# Pre-PR3 visual-sanity pass. Spec (`Densitas_relics.md` section 4)
+# originally called for a 20px target; after eyeballing the preview
+# Matthew bumped it to 32 (2026-05-22) - the chunky 16-px terrain
+# was dwarfing 20-px relics. 32 == native art size, so the cached
+# surface is built 1:1 with no downscale. When PR3 lands, this
+# constant moves into [render.relic] config.
+RELIC_SPRITE_SIZE_PX: int = 32
 
 BELIEF_TINT: dict[int, tuple[int, int, int]] = {
     0: (90, 200, 220),
@@ -101,6 +113,24 @@ class Renderer(abc.ABC):
                            brush_size: int = 1) -> None: ...
 
     @abc.abstractmethod
+    def blit_relics(self, screen: pygame.Surface, relics, cam_x: float,
+                     cam_y: float, sim_t: float) -> None:
+        """Render any placed relics onto the screen at their tile coords.
+
+        Pre-PR3 visual-sanity slice - accepts a duck-typed iterable of
+        objects with `.faction: int`, `.tx: int`, `.ty: int` attributes.
+        The full `Relic` dataclass arrives with PR3 (`densitas/relics.py`)
+        and adds state / placed_at / threat_timer / etc.; the renderer
+        will grow accordingly then (fade-in pulse during place_cooldown,
+        threat ring while threatened, crack/flash on shatter).
+
+        For now: blit the cached glyph surface for each relic's faction
+        at the relic's tile, bottom-centred so the base aligns with the
+        tile's bottom edge in screen space.
+        """
+        ...
+
+    @abc.abstractmethod
     def repaint_tile(self, world_surface: pygame.Surface, world: World,
                       tx: int, ty: int) -> None:
         """Re-blit a single tile's sprite onto the cached world surface.
@@ -113,11 +143,11 @@ class Renderer(abc.ABC):
     @abc.abstractmethod
     def blit_cast_queue(self, screen: pygame.Surface, queues: dict,
                          cam_x: float, cam_y: float, font) -> None:
-        """Paint chevrons for every queued cast (Densitas_queue.md §6.1).
+        """Paint chevrons for every queued cast (Densitas_queue.md section 6.1).
 
         `queues` is `PowerSystem.queues`; the renderer iterates and paints
-        amber ▲ on RAISE entries, brown ▼ on LOWER entries, with a small
-        position number in the corner.
+        amber up-triangle on RAISE entries, brown down-triangle on LOWER
+        entries, with a small position number in the corner.
         """
         ...
 
@@ -135,6 +165,10 @@ class PixelRenderer(Renderer):
         self._belief_overlay_world: pygame.Surface | None = None
         self._food_cache_version: int = -1
         self._food_overlay_world: pygame.Surface | None = None
+        # Pre-PR3: cached relic glyph surface per faction. Built once;
+        # blitted by reference each frame from `blit_relics`.
+        self._relic_sprites: dict[int, pygame.Surface] = {}
+        self._build_relic_sprites()
 
     # -- tile sprites -------------------------------------------------------
 
@@ -209,7 +243,7 @@ class PixelRenderer(Renderer):
             px(6, hy, outline)
         px(2, 0, outline); px(5, 0, outline)
 
-        # Frame 3 = EATING munch — drop the mouth outline pixels so the
+        # Frame 3 = EATING munch - drop the mouth outline pixels so the
         # mouth looks open. Cycles with frame 0 to give a chewing motion.
         mouth_open = (frame == 3)
         if facing == Facing.SOUTH and not mouth_open:
@@ -278,7 +312,7 @@ class PixelRenderer(Renderer):
           * Walk frames cycle by *spatial* phase (position), not the clock.
           * DYING citizens are alpha-faded by `c.dying_fade` (paired with
             the P1.5 belief-field fade).
-          * EATING citizens chew — alternate frame 0 / frame 3 (mouth open).
+          * EATING citizens chew - alternate frame 0 / frame 3 (mouth open).
         """
         ts = self.cfg.tile_size
         vw, vh = self.cfg.viewport_w, self.cfg.viewport_h
@@ -292,7 +326,7 @@ class PixelRenderer(Renderer):
             wy = int(c.y * ts) - cy_int + (ts - CITIZEN_H)
             if wx + CITIZEN_W < 0 or wy + CITIZEN_H < 0 or wx >= vw or wy >= vh:
                 continue
-            # DYING — alpha-fade the idle sprite by remaining dying_fade.
+            # DYING - alpha-fade the idle sprite by remaining dying_fade.
             if c.state == CitizenState.DYING:
                 sprite = sprites.get((c.faction, int(c.facing), 0))
                 if sprite is None:
@@ -307,11 +341,11 @@ class PixelRenderer(Renderer):
                 else:
                     blit(sprite, (wx, wy))
                 continue
-            # EATING — alternate mouth-closed (0) and mouth-open (3) ~2.5x/sec.
+            # EATING - alternate mouth-closed (0) and mouth-open (3) ~2.5x/sec.
             if c.state == CitizenState.EATING:
                 frame = 3 if (int(sim_time / 0.4) + c.id) & 1 else 0
             elif c.state in walk_states:
-                # Spatial phase — animation steps with the citizen's actual
+                # Spatial phase - animation steps with the citizen's actual
                 # motion. Sum x+y so diagonal travel still cycles cleanly.
                 phase = (c.x + c.y) % 1.0
                 frame = 1 if phase < 0.5 else 2
@@ -422,7 +456,7 @@ class PixelRenderer(Renderer):
         When > 1 and kind is RAISE/LOWER (vals 10/11), the AoE circle is
         replaced by an `NxN` top-left-anchored outline so the player can
         see exactly which tiles the click will hit. Other powers ignore
-        brush_size — they're always single-tile.
+        brush_size - they're always single-tile.
         """
         ts = self.cfg.tile_size
         vw, vh = self.cfg.viewport_w, self.cfg.viewport_h
@@ -516,15 +550,15 @@ class PixelRenderer(Renderer):
 
     def blit_cast_queue(self, screen: pygame.Surface, queues: dict,
                          cam_x: float, cam_y: float, font) -> None:
-        """Paint amber ▲ for queued Raise, brown ▼ for queued Lower
-        (Densitas_queue.md §6.1). Position number in the upper-right of
-        each chevron; we draw 1-9 and stop (the chevron carries the
-        load-bearing signal past 9)."""
+        """Paint amber up-triangle for queued Raise, brown down-triangle
+        for queued Lower (Densitas_queue.md section 6.1). Position number
+        in the upper-right of each chevron; we draw 1-9 and stop (the
+        chevron carries the load-bearing signal past 9)."""
         if not queues:
             return
         ts = self.cfg.tile_size
         vw, vh = self.cfg.viewport_w, self.cfg.viewport_h
-        # Tints — match the cast-preview palette.
+        # Tints - match the cast-preview palette.
         AMBER = (220, 180, 80)   # RAISE
         BROWN = (160, 110, 70)   # LOWER
         DARK  = (10, 10, 16)
@@ -544,7 +578,7 @@ class PixelRenderer(Renderer):
                 cx = sx + ts // 2
                 cy = sy + ts // 2
                 r = max(5, ts // 2 - 2)
-                # Triangle (▲ up for raise, ▼ down for lower).
+                # Triangle (up for raise, down for lower).
                 if is_raise:
                     pts = [(cx, cy - r), (cx - r, cy + r), (cx + r, cy + r)]
                 else:
@@ -559,6 +593,68 @@ class PixelRenderer(Renderer):
                     txt = font.render(str(i), True, DARK)
                     screen.blit(txt, (cx + r - txt.get_width() - 1,
                                        cy - r + 1 if is_raise else cy + 1))
+
+    # -- relic sprites (pre-PR3 visual sanity) -----------------------------
+
+    def _build_relic_sprites(self) -> None:
+        """Bake one cached pygame.Surface per faction from the pixel data
+        in `densitas/relic_glyphs.py`. Done once at renderer init; the
+        per-frame `blit_relics` just blits these surfaces by reference.
+
+        Source art is RELIC_GLYPH_NATIVE_PX (32) square; we render
+        at RELIC_SPRITE_SIZE_PX (32 after the 2026-05-22 bump from
+        the spec-default 20) so the relic reads as ~2 tiles tall on
+        the chunky 16-px terrain. When target == native, no scale
+        is applied and the cached surface is 1:1 with the source.
+        """
+        native = RELIC_GLYPH_NATIVE_PX
+        target = RELIC_SPRITE_SIZE_PX
+        for faction, (palette, pixels) in RELIC_GLYPHS_BY_FACTION.items():
+            native_surf = pygame.Surface((native, native), pygame.SRCALPHA)
+            native_surf.fill((0, 0, 0, 0))
+            for x, y, pal_idx in pixels:
+                r, g, b = palette[pal_idx]
+                native_surf.set_at((x, y), (r, g, b, 255))
+            if target != native:
+                scaled = pygame.transform.scale(native_surf, (target, target))
+            else:
+                scaled = native_surf
+            self._relic_sprites[faction] = scaled
+
+    def blit_relics(self, screen: pygame.Surface, relics, cam_x: float,
+                     cam_y: float, sim_t: float) -> None:
+        """Render any placed relics on top of the world surface.
+
+        Anchored bottom-centred on the relic's tile (`Densitas_relics.md`
+        section 4): the sprite extends well above and to the sides
+        of a 16-px tile because the sprite is 32-px wide. Drawn before
+        citizens by the main-loop ordering so a citizen on the same
+        tile walks visibly over the relic's base.
+
+        `relics` is duck-typed - anything iterable yielding objects with
+        `.faction`, `.tx`, `.ty`. The future `Relic` dataclass (PR3) and
+        the pre-PR3 hardcoded test list both satisfy this.
+        """
+        if not relics:
+            return
+        ts = self.cfg.tile_size
+        vw, vh = self.cfg.viewport_w, self.cfg.viewport_h
+        target = RELIC_SPRITE_SIZE_PX
+        # Bottom-centred anchor offsets (tile-local).
+        ox = (ts - target) // 2          # negative when sprite > tile -> sticks out
+        oy = ts - target                  # negative when sprite > tile -> sticks above
+        for r in relics:
+            sprite = self._relic_sprites.get(int(r.faction))
+            if sprite is None:
+                continue
+            sx = int(r.tx * ts - cam_x + ox)
+            sy = int(r.ty * ts - cam_y + oy)
+            # Frustum cull - the sprite is 32x32 so the overhang past
+            # the tile is one full tile on each side; the existing
+            # margin still handles it.
+            if sx + target < 0 or sy + target < 0 or sx >= vw or sy >= vh:
+                continue
+            screen.blit(sprite, (sx, sy))
 
 
 def make_renderer(cfg: RenderConfig) -> Renderer:
