@@ -29,6 +29,7 @@ def _make_food_cfg(**overrides) -> FoodConfig:
         eat_duration=1.0,
         bite_size=0.2,
         calorie_per_food=1.0,
+        satiation_cap=0.5,
         forage_radius_tiles=8,
         min_forage_food=0.5,
         overlay_alpha_max=160,
@@ -318,6 +319,35 @@ def test_eating_reduces_hunger_and_tile_food():
     cm.tick(0.2, w, f)
     assert cm.citizens[0].hunger < hunger_before
     assert f.food[5, 5] < tile_before
+
+
+def test_satiation_buffer_lets_hunger_go_negative():
+    """A well-fed citizen on an abundant tile gorges past hunger=0 down to
+    -satiation_cap, then exits EATING when state_timer expires (not on hunger<=0).
+
+    With satiation_cap=0.5, bite_size=0.2, calorie_per_food=1.0, the citizen
+    starting at hunger=0.0 should hit -0.5 within ~3 bites = 3 ticks of 0.2s.
+    """
+    w = _make_world(tile=int(Tile.GRASS))
+    food_cfg = _make_food_cfg(eat_duration=10.0, bite_size=0.2, calorie_per_food=1.0,
+                                hunger_rate=0.0, satiation_cap=0.5)
+    f = FoodField(food_cfg, w)
+    cfg = _make_citizen_cfg(initial_population=0, dying_duration=2.0)
+    cm = CitizenManager(cfg, w, world_seed=1, food_cfg=food_cfg)
+    cm.citizens = [
+        Citizen(id=1, faction=0, x=5.5, y=5.5,
+                state=CitizenState.EATING, age=50.0, lifespan=180.0, repro_cd=0.0,
+                facing=Facing.SOUTH, home_x=5.5, home_y=5.5,
+                target_x=5.5, target_y=5.5, state_timer=5.0,
+                hunger=0.0, food_carried=0),
+    ]
+    # Five ticks of 0.2s — enough to eat past zero into the reserve.
+    for _ in range(5):
+        cm.tick(0.2, w, f)
+    c = cm.citizens[0]
+    # Should be at the clamp floor, still in EATING (timer hasn't expired).
+    assert c.hunger == -0.5, f"expected hunger==-0.5, got {c.hunger}"
+    assert c.state == CitizenState.EATING, f"expected EATING, got {c.state}"
 
 
 def test_food_carried_field_defaults_zero():

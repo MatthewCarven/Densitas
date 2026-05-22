@@ -97,7 +97,8 @@ class Renderer(abc.ABC):
     @abc.abstractmethod
     def blit_cast_preview(self, screen: pygame.Surface, spec: "PowerSpec",
                            tx: int, ty: int, ok: bool, reason: str,
-                           cam_x: float, cam_y: float, font) -> None: ...
+                           cam_x: float, cam_y: float, font,
+                           brush_size: int = 1) -> None: ...
 
     @abc.abstractmethod
     def repaint_tile(self, world_surface: pygame.Surface, world: World,
@@ -409,12 +410,19 @@ class PixelRenderer(Renderer):
 
     def blit_cast_preview(self, screen: pygame.Surface, spec,
                            tx: int, ty: int, ok: bool, reason: str,
-                           cam_x: float, cam_y: float, font) -> None:
+                           cam_x: float, cam_y: float, font,
+                           brush_size: int = 1) -> None:
         """Paint the AoE circle + status chip for the active power mode.
 
         Coordinates are world tiles. Caller passes the mouse-to-tile
         result. Renderer composes a transparent overlay so it doesn't
         require the world surface.
+
+        `brush_size` controls the bulk Raise/Lower footprint (P3-Brush).
+        When > 1 and kind is RAISE/LOWER (vals 10/11), the AoE circle is
+        replaced by an `NxN` top-left-anchored outline so the player can
+        see exactly which tiles the click will hit. Other powers ignore
+        brush_size — they're always single-tile.
         """
         ts = self.cfg.tile_size
         vw, vh = self.cfg.viewport_w, self.cfg.viewport_h
@@ -435,21 +443,54 @@ class PixelRenderer(Renderer):
         else:
             border = (220, 90, 80)
 
-        # Overlay surface for the alpha circle.
-        ov = pygame.Surface((rpx * 2 + 6, rpx * 2 + 6), pygame.SRCALPHA)
-        pygame.draw.circle(ov, (*tint, 70), (rpx + 3, rpx + 3), rpx)
-        pygame.draw.circle(ov, (*border, 220), (rpx + 3, rpx + 3), rpx, width=2)
-        # Crosshair pip at the centre tile.
-        pygame.draw.rect(
-            ov, (*border, 200),
-            pygame.Rect(rpx + 3 - ts // 2, rpx + 3 - ts // 2, ts, ts),
-            width=1,
-        )
-        screen.blit(ov, (sx - rpx - 3, sy - rpx - 3))
+        # P3-Brush: Raise (10) / Lower (11) with brush_size > 1 show an
+        # NxN footprint outline instead of the point-target circle. The
+        # cursor tile is the top-left of the brush; the square extends
+        # right + down. Validation status colours the outline.
+        is_brushable = int(spec.kind) in (10, 11) and brush_size > 1
+        if is_brushable:
+            brush_px = ts * brush_size
+            brush_rect = pygame.Rect(
+                int(tx * ts - cam_x),
+                int(ty * ts - cam_y),
+                brush_px, brush_px,
+            )
+            ov = pygame.Surface((brush_px, brush_px), pygame.SRCALPHA)
+            ov.fill((*tint, 50))
+            pygame.draw.rect(ov, (*border, 220), ov.get_rect(), width=2)
+            # Subtle grid lines so the player can count tiles at a glance.
+            for i in range(1, brush_size):
+                pygame.draw.line(ov, (*border, 110),
+                                  (i * ts, 0), (i * ts, brush_px), width=1)
+                pygame.draw.line(ov, (*border, 110),
+                                  (0, i * ts), (brush_px, i * ts), width=1)
+            screen.blit(ov, brush_rect.topleft)
+        else:
+            # Overlay surface for the alpha circle.
+            ov = pygame.Surface((rpx * 2 + 6, rpx * 2 + 6), pygame.SRCALPHA)
+            pygame.draw.circle(ov, (*tint, 70), (rpx + 3, rpx + 3), rpx)
+            pygame.draw.circle(ov, (*border, 220), (rpx + 3, rpx + 3), rpx, width=2)
+            # Crosshair pip at the centre tile.
+            pygame.draw.rect(
+                ov, (*border, 200),
+                pygame.Rect(rpx + 3 - ts // 2, rpx + 3 - ts // 2, ts, ts),
+                width=1,
+            )
+            screen.blit(ov, (sx - rpx - 3, sy - rpx - 3))
 
         # Status chip: "BLESS  10b  4.0s   need T2" near the cursor.
+        # Brush mode shows total cost (per-tile * tiles) so the player
+        # can see what they're committing.
         chip_lines = []
-        chip_lines.append(f"{spec.name.upper()}  {spec.belief_cost:.0f}b  {spec.cooldown:.1f}s")
+        if is_brushable:
+            n_tiles = brush_size * brush_size
+            total_cost = spec.belief_cost * n_tiles
+            chip_lines.append(
+                f"{spec.name.upper()} x{n_tiles}  {total_cost:.0f}b  {spec.cooldown:.1f}s"
+            )
+            chip_lines.append(f"brush {brush_size}x{brush_size} (+/-)")
+        else:
+            chip_lines.append(f"{spec.name.upper()}  {spec.belief_cost:.0f}b  {spec.cooldown:.1f}s")
         if reason:
             chip_lines.append(reason)
 

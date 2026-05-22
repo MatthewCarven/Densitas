@@ -1,8 +1,9 @@
-"""Densitas - P3 PR2 entry point.
+"""Densitas - P3 PR2 + Cast Queue entry point.
 
 Tile map + camera + terrain (P0) + citizens + HUD (P1) + belief field (P2)
 + food/forage/hunger (P1.5) + Powers T0/T1 + Bless/Curse (P3 PR1)
-+ Raise/Lower terrain mutation + drown rule (P3 PR2).
++ Raise/Lower terrain mutation + drown rule (P3 PR2)
++ Click-chain queue for Raise/Lower with cancel UX (P3-Queue).
 
 Run from the repo root with:
     python -m densitas.main
@@ -12,6 +13,13 @@ Number keys 1-7 pick a power mode:
     1 Inspire   2 Calm        3 Hunger Pang
     4 Raise     5 Lower       6 Bless        7 Curse
 Left-click to cast; right-click or Esc to cancel mode.
+
+While Raise (4) or Lower (5) is the active mode:
+    +  / =      bump brush size up   (side length 1 -> 2 -> 3 -> 4; tiles 1 -> 4 -> 9 -> 16)
+    -  / _      bump brush size down (cap at 1)
+Brush is top-left anchored: the cursor tile is the upper-left corner of
+the NxN square, extending right and down. Persists across mode switches
+but only takes effect in Raise/Lower.
 """
 from __future__ import annotations
 import sys
@@ -72,7 +80,7 @@ def main(argv: list[str] | None = None) -> int:
     cfg = config.load()
 
     pygame.init()
-    pygame.display.set_caption("Densitas - P3 PR2")
+    pygame.display.set_caption("Densitas - P3 PR2 + Queue")
     screen = pygame.display.set_mode((cfg.render.viewport_w, cfg.render.viewport_h))
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("consolas,menlo,monaco,monospace", 14)
@@ -163,6 +171,11 @@ def main(argv: list[str] | None = None) -> int:
     show_belief_overlay = False
     show_food_overlay = False
     active_mode: Optional[PowerKind] = None
+    # Brush size for bulk Raise/Lower (side length, so tile count = brush_size**2).
+    # 1..4 -> 1, 4, 9, 16 tiles. Persists across mode switches; only effective
+    # while active_mode is RAISE or LOWER. Modulated by +/- (top row or keypad).
+    brush_size: int = 1
+    BRUSH_MIN, BRUSH_MAX = 1, 4
     last_cast_failed_at: float = -1.0  # for HUD flash (used in debug overlay)
     last_cast_reason: str = ""
 
@@ -189,23 +202,95 @@ def main(argv: list[str] | None = None) -> int:
                     show_belief_overlay = not show_belief_overlay
                 elif event.key == pygame.K_f:
                     show_food_overlay = not show_food_overlay
+                elif event.key == pygame.K_c:
+                    # P3-Queue: clear the queue for the current mode.
+                    if active_mode in (PowerKind.RAISE, PowerKind.LOWER):
+                        n = power_system.clear_queue(active_mode, faction=0)
+                        if n:
+                            last_cast_failed_at = sim_time
+                            last_cast_reason = f"cleared {n} queued"
+                elif event.key in (pygame.K_PLUS, pygame.K_EQUALS,
+                                    pygame.K_KP_PLUS):
+                    # P3-Brush: bump brush size up. Only effective while
+                    # active_mode is Raise/Lower; key still consumed (i.e.
+                    # the brush variable persists) so switching back to
+                    # Raise restores the prior brush.
+                    if brush_size < BRUSH_MAX:
+                        brush_size += 1
+                        if active_mode in (PowerKind.RAISE, PowerKind.LOWER):
+                            last_cast_failed_at = sim_time
+                            last_cast_reason = (
+                                f"brush {brush_size}x{brush_size} "
+                                f"({brush_size * brush_size} tiles)"
+                            )
+                elif event.key in (pygame.K_MINUS, pygame.K_UNDERSCORE,
+                                    pygame.K_KP_MINUS):
+                    if brush_size > BRUSH_MIN:
+                        brush_size -= 1
+                        if active_mode in (PowerKind.RAISE, PowerKind.LOWER):
+                            last_cast_failed_at = sim_time
+                            last_cast_reason = (
+                                f"brush {brush_size}x{brush_size} "
+                                f"({brush_size * brush_size} tiles)"
+                            )
                 elif event.key in POWER_KEYS:
                     active_mode = POWER_KEYS[event.key]
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1 and active_mode is not None:
                     mx, my = event.pos
                     tx, ty = _screen_to_tile(mx, my, cam, cfg)
-                    receipt = power_system.cast(
-                        kind=active_mode, faction=0,
-                        tx=tx, ty=ty,
-                        citizens=citizen_mgr, world=world, food=food,
-                        belief=belief, sim_t=sim_time,
-                    )
-                    if not receipt.ok:
+                    # P3-Queue: queueable kinds go through cast_or_queue
+                    # so chained clicks during cooldown enqueue rather
+                    # than fail.
+                    # P3-Brush: bulk Raise/Lower expands one click into an
+                    # NxN top-left-anchored square; other powers stay
+                    # single-tile regardless of brush_size.
+                    if active_mode in (PowerKind.RAISE, PowerKind.LOWER):
+                        bn = brush_size
+                    else:
+                        bn = 1
+                    first_fail: Optional[str] = None
+                    is_first_tile = True
+                    for dx in range(bn):
+                        for dy in range(bn):
+                            receipt = power_system.cast_or_queue(
+                                kind=active_mode, faction=0,
+                                tx=tx + dx, ty=ty + dy,
+                                citizens=citizen_mgr, world=world, food=food,
+                                belief=belief, sim_t=sim_time,
+                                # P3-Brush: first tile carries the
+                                # scripture voice; tiles 2..N**2 are
+                                # silent so one click reads as one
+                                # casting motion in the log.
+                                suppress_scripture=not is_first_tile,
+                            )
+                            if not receipt.ok and first_fail is None:
+                                first_fail = receipt.reason
+                            # Only flip after a tile that actually had a
+                            # shot at emitting scripture (i.e. the call
+                            # got past validation enough to debit/queue).
+                            # Validation failures don't emit scripture
+                            # either way, so they shouldn't burn the
+                            # "first" slot.
+                            if receipt.ok:
+                                is_first_tile = False
+                    if first_fail is not None:
                         last_cast_failed_at = sim_time
-                        last_cast_reason = receipt.reason
+                        last_cast_reason = first_fail
                 elif event.button == 3:
-                    active_mode = None
+                    # P3-Queue: RMB on a queued tile cancels that tile
+                    # first; falls through to mode-cancel only if no
+                    # queued tile under cursor.
+                    cancelled = False
+                    if active_mode in (PowerKind.RAISE, PowerKind.LOWER) \
+                            and pygame.mouse.get_focused():
+                        mx, my = event.pos
+                        tx, ty = _screen_to_tile(mx, my, cam, cfg)
+                        cancelled = power_system.cancel_queued_at(
+                            tx, ty, active_mode, faction=0,
+                        )
+                    if not cancelled:
+                        active_mode = None
 
         keys = pygame.key.get_pressed()
         if pygame.mouse.get_focused():
@@ -220,6 +305,11 @@ def main(argv: list[str] | None = None) -> int:
         while sim_accumulator >= tick_dt:
             # Order matters: tick effects first so food.recompute sees them.
             power_system.tick(tick_dt, citizen_mgr, sim_time)
+            # P3-Queue: drain right after tick so a just-cleared cooldown
+            # can dispatch in the same step. Belief was debited at enqueue.
+            power_system.drain_queues(
+                citizen_mgr, world, food, belief, sim_time,
+            )
             food.recompute(tick_dt, effects=power_system.effects)
             citizen_mgr.tick(tick_dt, world, food)
             belief.recompute(citizen_mgr.citizens)
@@ -234,6 +324,10 @@ def main(argv: list[str] | None = None) -> int:
             renderer.blit_belief_overlay(screen, belief, cam.x, cam.y)
         renderer.blit_citizens(screen, citizen_mgr.iter_for_render(), cam.x, cam.y, sim_time)
 
+        # P3-Queue: queued-cast chevrons sit above citizens, below preview.
+        renderer.blit_cast_queue(screen, power_system.queues,
+                                  cam.x, cam.y, cast_chip_font)
+
         # Cast preview (P3) — draw above citizens, below HUD.
         if active_mode is not None and pygame.mouse.get_focused():
             mx, my = pygame.mouse.get_pos()
@@ -244,16 +338,23 @@ def main(argv: list[str] | None = None) -> int:
                     active_mode, faction=0, tx=tx, ty=ty,
                     citizens=citizen_mgr, world=world,
                 )
+                preview_brush = (
+                    brush_size
+                    if active_mode in (PowerKind.RAISE, PowerKind.LOWER)
+                    else 1
+                )
                 renderer.blit_cast_preview(
                     screen, spec, tx, ty, ok, reason,
                     cam.x, cam.y, cast_chip_font,
+                    brush_size=preview_brush,
                 )
 
         if show_debug:
             _draw_debug(screen, font, clock, cam, cfg, citizen_mgr, belief, food,
                          power_system, active_mode, sim_time,
                          show_belief_overlay, show_food_overlay,
-                         last_cast_failed_at, last_cast_reason)
+                         last_cast_failed_at, last_cast_reason,
+                         brush_size)
         hud.draw(screen, citizen_mgr, belief,
                   powers=power_system, sim_t=sim_time,
                   active_mode=(int(active_mode) if active_mode is not None else None))
@@ -272,7 +373,8 @@ def _screen_to_tile(mx: int, my: int, cam, cfg) -> tuple[int, int]:
 
 def _draw_debug(screen, font, clock, cam, cfg, cm, belief, food,
                  ps, active_mode, sim_time, show_belief, show_food,
-                 last_cast_failed_at: float, last_cast_reason: str) -> None:
+                 last_cast_failed_at: float, last_cast_reason: str,
+                 brush_size: int = 1) -> None:
     ts = cfg.render.tile_size
     tile_x = int((cam.x + cfg.render.viewport_w / 2) // ts)
     tile_y = int((cam.y + cfg.render.viewport_h / 2) // ts)
@@ -280,6 +382,8 @@ def _draw_debug(screen, font, clock, cam, cfg, cm, belief, food,
     food_here = food.query(tile_x, tile_y)
     fed, hungry, starving, avg = cm.hunger_stats(0)
     mode_name = POWERS[active_mode].name if active_mode is not None else "—"
+    if active_mode in (PowerKind.RAISE, PowerKind.LOWER) and brush_size > 1:
+        mode_name = f"{mode_name} brush {brush_size}x{brush_size} ({brush_size * brush_size}t)"
     pool0 = ps.pool[0]
     pool1 = ps.pool[1] if len(ps.pool) > 1 else 0.0
     err_line = ""
@@ -297,7 +401,9 @@ def _draw_debug(screen, font, clock, cam, cfg, cm, belief, food,
         f"Food:   total {food.total():.0f}  peak={food.peak():.2f}  "
         f"overlay {'ON' if show_food else 'off'} (F)",
         f"Power:  mode {mode_name}   pool f0={pool0:.1f}  f1={pool1:.1f}  effects={len(ps.effects)}",
-        err_line if err_line else "1-7 power - LMB cast - RMB cancel - F3 debug - B/F overlays - ESC",
+        f"Queue:  R x {len(ps.queues.get((0, 10), [])):d} ({len(ps.queues.get((0, 10), [])) * 2.0:.1f}s)  "
+        f"L x {len(ps.queues.get((0, 11), [])):d} ({len(ps.queues.get((0, 11), [])) * 2.0:.1f}s)",
+        err_line if err_line else "1-7 power - +/- brush (R/L) - LMB cast/queue - RMB cancel - C clear queue - F3 - B/F - ESC",
     ]
     pad = 8
     line_h = font.get_linesize()

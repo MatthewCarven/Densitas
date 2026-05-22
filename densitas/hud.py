@@ -193,6 +193,24 @@ class HUD:
             # Active-mode highlight ring.
             if active_mode is not None and int(active_mode) == kind_val:
                 pygame.draw.rect(screen, HUD_PARCH, rect.inflate(4, 4), width=2)
+            # Queue count badge (P3-Queue): tiny superscript in upper-right.
+            q = getattr(powers, "queues", {})
+            n_q = len(q.get((0, kind_val), []))
+            if n_q:
+                # Cap visible badge at 9; queue holds more.
+                txt = self.font_small.render(
+                    str(min(n_q, 9)) + ("+" if n_q > 9 else ""),
+                    True, HUD_AMBER,
+                )
+                bx = ix + size - txt.get_width() - 2
+                by = iy + 2
+                bg = pygame.Surface(
+                    (txt.get_width() + 2, txt.get_height()),
+                    pygame.SRCALPHA,
+                )
+                bg.fill((10, 10, 16, 200))
+                screen.blit(bg, (bx - 1, by))
+                screen.blit(txt, (bx, by))
             ix += size + gap
 
     def _draw_scripture_log(self, screen, powers, sim_t: float) -> None:

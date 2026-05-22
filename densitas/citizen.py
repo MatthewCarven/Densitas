@@ -241,10 +241,12 @@ class CitizenManager:
                     take = food.consume(int(c.x), int(c.y), fc.bite_size)
                     if take > 0.0:
                         c.hunger -= take * fc.calorie_per_food
-                        if c.hunger < 0.0:
-                            c.hunger = 0.0
+                        # P1.5b: satiation buffer. Citizens gorge into a
+                        # negative-hunger reserve, then coast on it.
+                        if c.hunger < -fc.satiation_cap:
+                            c.hunger = -fc.satiation_cap
                         c.state_timer -= dt
-                        if c.state_timer <= 0.0 or c.hunger <= 0.0:
+                        if c.state_timer <= 0.0:
                             c.state = CitizenState.IDLE
                     else:
                         # Tile exhausted under us — go forage somewhere else.

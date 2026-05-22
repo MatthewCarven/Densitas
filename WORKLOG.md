@@ -1,3 +1,29 @@
+## 2026-05-22 (P3-Brush) — Bulk Raise/Lower with N×N click footprint
+
+Playtest reaction to PR2 (Cast Queue): single-tile Raise/Lower is too slow when you're trying to terraform a coastline or pull up a plateau. Added a brush-size modifier (`+`/`-`) that expands one click into an N×N square. Side length 1-4 means 1, 4, 9, or 16 tiles per click. Zero spec churn — this is a playtest-driven tweak, lives in the worklog rather than P3.md.
+
+**What landed:**
+
+- `densitas/main.py` — new `brush_size: int = 1` state (with `BRUSH_MIN=1, BRUSH_MAX=4`). `pygame.K_PLUS / K_EQUALS / K_KP_PLUS` bumps up; `K_MINUS / K_UNDERSCORE / K_KP_MINUS` bumps down. Brush persists across mode switches (the hover overlay makes the current size always visible, so it can't surprise). LMB on a Raise/Lower mode loops `for dx in range(bn): for dy in range(bn): cast_or_queue(tx+dx, ty+dy)` — top-left anchored. Other powers stay single-tile regardless of `brush_size`. Debug overlay mode-name grows to `"Raise brush 4x4 (16t)"` when brush > 1; help line gains `+/- brush (R/L)`.
+- `densitas/render.py` — `blit_cast_preview` gains a `brush_size: int = 1` kwarg (default keeps the old call sites working). When > 1 and kind is RAISE/LOWER, the existing AoE-circle path is replaced by a filled `NxN` rect overlay with grid-lines between tiles so the player can count at a glance. Border uses the same validity-tinted palette as today (green/amber/red). Chip text grows to `"RAISE x16  80b  2.0s"` + `"brush 4x4 (+/-)"` when active.
+- `densitas/powers.py` — scripture burst suppression. `QueuedCast` gains `suppress_scripture: bool = False`. `cast()` and `cast_or_queue()` both take a matching kwarg (default False, so all existing callers are unaffected). When True, the immediate-cast scripture append in `cast()` is skipped, the queue entry stores the flag, and `_dispatch_queued()` honours it on both the valid and invalid paths. Net effect: a 4×4 bulk-Raise emits one scripture line for tile #1, the other 15 dispatch silently. Manual single-tile click-chains still emit per-tile (the flag is caller-controlled, not power-controlled).
+- `main.py` brush loop sets `suppress_scripture=(not is_first)`; `is_first` only flips after a tile that came back `r.ok` so a leading validation failure (e.g. off-map first tile) doesn't burn the "first" slot.
+- `tests/test_powers.py` — `test_32_brush_scripture_suppression` (16-tile brush emits one scripture line via the immediate path + 15 queued; drain loop confirms each `drain_queues` call grows the log by zero). `test_33_brush_suppression_invalid_path_also_silent` (a suppressed queued tile that turns invalid before dispatch — e.g. world moved to MOUNTAIN — also doesn't emit the `queued_invalid` line, so a 4×4 brush across a ridge still reads as one casting motion).
+
+**Test results:** 89/89 pass (87 prior + 2 new). Run from `/tmp/dtest_p3/` — the in-mount pytest still hits the flaky-cleanup issue that the test file's docstring already warns about.
+
+**Smoke test (not yet — pygame head needed):** would be: pick Raise mode, press `+` three times, hover over a forest fringe and observe the 4×4 cyan-grid outline; click — 16 tiles enqueue, log shows one scripture line, the world surface repaints the 16 tiles across the next 32 sim_sec as the queue drains.
+
+**Cost math worth noting.** A 4×4 Raise is 16 × 5 = 80 belief. At T1 (≈10-30 citizens, regen 0.2-0.6 b/s) that's 2-7 minutes of belief banking per max-brush click. The pool is uncapped in P3, so big brushes amount to "save up, then sculpt." Feels right.
+
+**Design notes for future-Claude.** `suppress_scripture` is caller-controlled by design — it's a *user-intent* flag, not a *mechanic*. Brush groups N² tiles under one intent; that's what the flag captures. A separate "burst suppress" timer mechanism was the first sketch but discarded because it'd suppress legitimate click-chains and was timing-fragile against the existing `test_30`. The flag-based approach is invasive (touches `QueuedCast`, `cast()`, `cast_or_queue()`, `_dispatch_queued()`) but the semantics are stable.
+
+**No spec doc changes.** This isn't in `Densitas_P3.md` or any companion — it's a UX layer above the powers spec, and the spec's seams (cast_or_queue, queue + drain) were exactly right for it. Adding to TODO as a shipped item under a new "P3-Brush" header so the milestone state stays legible.
+
+**Up next:** PR3 Religious Relics. The `Densitas_relics.md` companion is sitting ready (drafted 2026-05-22). 13-step ordered build inside §13.
+
+---
+
 ## 2026-05-21 (P1 polish ship) — Walk cycle, DYING fade, EATING munch
 
 The "open from P1" polish bucket cleared. Three small visual improvements; each one shows up immediately during playtest without changing any game mechanic.

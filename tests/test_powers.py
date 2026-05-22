@@ -1,11 +1,14 @@
 """P3 tests — PowerSystem dispatch + T0/T1 + Bless/Curse + rhetoric (PR1)
-plus Raise/Lower terrain mutation + drown rule (PR2).
+plus Raise/Lower terrain mutation + drown rule (PR2) plus the cast queue
+for Raise/Lower (P3-Queue, Densitas_queue.md).
 
 Spec §12 numbered tests:
   PR1: 1-11 (init / regen / cast validation / inspire / bless / curse / cooldown)
        + 7-9 (effects) + 16-18 (scripture / can_cast / hunger pang).
   PR2: 12-15 (raise/lower world+food update, mountain block, two-step lower,
        drown). Live in this file as test_21..test_24.
+  Queue: enqueue / drain / cancel / clear / queued_invalid / cap.
+         test_25..test_31.
 
 Run from /tmp/dtest_p3/ to dodge the flaky-mount pytest-cleanup recursion.
 """
@@ -63,7 +66,8 @@ def _food_cfg():
         hunger_rate=0.05, forage_threshold=0.40,
         repro_hunger_threshold=0.30, starve_hunger=1.00,
         eat_amount=0.20, eat_duration=1.00, bite_size=0.20,
-        calorie_per_food=1.00, forage_radius_tiles=8, min_forage_food=0.10,
+        calorie_per_food=1.00, satiation_cap=0.50,
+        forage_radius_tiles=8, min_forage_food=0.10,
         overlay_alpha_max=160,
         biome=FoodBiomeConfig(
             forest_initial=1.0, forest_regen=0.007,
@@ -95,6 +99,7 @@ def _power_cfg():
         effect_duration_t1=30.0,
         inspire_radius=4, hunger_pang_radius=0,
         bless_radius=4, curse_radius=4,
+        queue_cap=16,
         relic=RelicConfig(
             amplitude=20.0, place_cooldown=30.0,
             shatter_ratio=1.5, shatter_time=8.0,
@@ -525,4 +530,256 @@ def test_24_lower_into_water_drowns_citizen(make_env):
     # Calling drown_at again on the same tile is idempotent (already-DYING skipped).
     cm.drown_at(tx, ty, dying_duration=2.0)
     assert victim.state == CitizenState.DYING
+
+
+
+# -- P3-Queue — click-chain Raise/Lower (Densitas_queue.md) ----------------
+
+def test_25_cast_or_queue_ready_fires_immediately(make_env):
+    """cast_or_queue on a ready Raise behaves like cast()."""
+    cm, world, food, belief, ps, _ = make_env()
+    _stuff_population(cm, world, 20, faction=0)
+    _wire_mutate_tile(ps, world, food, cm)
+    tx, ty = 5, 5
+    world.tiles[ty, tx] = int(Tile.GRASS)
+    ps.pool[0] = 100.0
+    r = ps.cast_or_queue(PowerKind.RAISE, 0, tx, ty, cm, world, food, belief, sim_t=0.0)
+    assert r.ok
+    assert int(world.tiles[ty, tx]) == int(Tile.FOREST)
+    # Queue should still be empty (immediate fire path).
+    assert (0, int(PowerKind.RAISE)) not in ps.queues
+    # Cooldown set.
+    assert ps.cooldowns.get((0, int(PowerKind.RAISE)), 0.0) > 0.0
+
+
+def test_26_cast_or_queue_on_cooldown_enqueues_and_debits(make_env):
+    """cast_or_queue while cooling enqueues and debits belief immediately."""
+    cm, world, food, belief, ps, _ = make_env()
+    _stuff_population(cm, world, 20, faction=0)
+    _wire_mutate_tile(ps, world, food, cm)
+    world.tiles[5, 5] = int(Tile.GRASS)
+    world.tiles[5, 6] = int(Tile.GRASS)
+    ps.pool[0] = 100.0
+    # First fires immediately (pool 100 -> 95).
+    ps.cast_or_queue(PowerKind.RAISE, 0, 5, 5, cm, world, food, belief, sim_t=0.0)
+    pool_after_first = ps.pool[0]
+    # Second enqueues (pool 95 -> 90).
+    r2 = ps.cast_or_queue(PowerKind.RAISE, 0, 6, 5, cm, world, food, belief, sim_t=0.1)
+    assert r2.ok and r2.reason == "queued"
+    assert ps.pool[0] == pool_after_first - 5.0
+    q = ps.queues[(0, int(PowerKind.RAISE))]
+    assert len(q) == 1
+    assert (q[0].tx, q[0].ty) == (6, 5)
+
+
+def test_27_drain_queues_pops_one_per_cleared_cooldown(make_env):
+    """Two enqueued + cooldown tick -> first drains, world updated, queue shrinks."""
+    cm, world, food, belief, ps, _ = make_env()
+    _stuff_population(cm, world, 20, faction=0)
+    _wire_mutate_tile(ps, world, food, cm)
+    world.tiles[5, 5] = int(Tile.GRASS)
+    world.tiles[5, 6] = int(Tile.GRASS)
+    world.tiles[5, 7] = int(Tile.GRASS)
+    ps.pool[0] = 100.0
+    # Fire one + queue two. After this: 1 cooling, 2 queued.
+    ps.cast_or_queue(PowerKind.RAISE, 0, 5, 5, cm, world, food, belief, sim_t=0.0)
+    ps.cast_or_queue(PowerKind.RAISE, 0, 6, 5, cm, world, food, belief, sim_t=0.0)
+    ps.cast_or_queue(PowerKind.RAISE, 0, 7, 5, cm, world, food, belief, sim_t=0.0)
+    assert len(ps.queues[(0, int(PowerKind.RAISE))]) == 2
+    # Tick past 2.0s cooldown, then drain.
+    for _ in range(int(2.5 / 0.2)):
+        ps.tick(0.2, cm, sim_t=0.0)
+    drained = ps.drain_queues(cm, world, food, belief, sim_t=2.5)
+    assert drained == 1
+    # First queued tile (6, 5) should have been raised.
+    assert int(world.tiles[5, 6]) == int(Tile.FOREST)
+    # One left in queue.
+    assert len(ps.queues[(0, int(PowerKind.RAISE))]) == 1
+
+
+def test_28_cancel_queued_at_refunds(make_env):
+    """RMB cancel on a specific queued tile removes it and refunds."""
+    cm, world, food, belief, ps, _ = make_env()
+    _stuff_population(cm, world, 20, faction=0)
+    _wire_mutate_tile(ps, world, food, cm)
+    ps.pool[0] = 100.0
+    # Fire one (cools), queue two.
+    ps.cast_or_queue(PowerKind.RAISE, 0, 5, 5, cm, world, food, belief, sim_t=0.0)
+    ps.cast_or_queue(PowerKind.RAISE, 0, 6, 5, cm, world, food, belief, sim_t=0.0)
+    ps.cast_or_queue(PowerKind.RAISE, 0, 7, 5, cm, world, food, belief, sim_t=0.0)
+    pool_before = ps.pool[0]
+    # Cancel the (6, 5) tile.
+    ok = ps.cancel_queued_at(6, 5, PowerKind.RAISE, 0)
+    assert ok
+    assert ps.pool[0] == pool_before + 5.0
+    q = ps.queues[(0, int(PowerKind.RAISE))]
+    assert len(q) == 1
+    assert (q[0].tx, q[0].ty) == (7, 5)
+    # Cancel on a non-queued tile returns False without changing pool.
+    pool_now = ps.pool[0]
+    assert not ps.cancel_queued_at(99, 99, PowerKind.RAISE, 0)
+    assert ps.pool[0] == pool_now
+
+
+def test_29_clear_queue_refunds_sum(make_env):
+    """'C' key -> clear_queue refunds every queued cost in one go."""
+    cm, world, food, belief, ps, _ = make_env()
+    _stuff_population(cm, world, 20, faction=0)
+    _wire_mutate_tile(ps, world, food, cm)
+    ps.pool[0] = 100.0
+    ps.cast_or_queue(PowerKind.RAISE, 0, 5, 5, cm, world, food, belief, sim_t=0.0)
+    ps.cast_or_queue(PowerKind.RAISE, 0, 6, 5, cm, world, food, belief, sim_t=0.0)
+    ps.cast_or_queue(PowerKind.RAISE, 0, 7, 5, cm, world, food, belief, sim_t=0.0)
+    ps.cast_or_queue(PowerKind.RAISE, 0, 8, 5, cm, world, food, belief, sim_t=0.0)
+    pool_before = ps.pool[0]
+    n_queued_before = len(ps.queues[(0, int(PowerKind.RAISE))])
+    n = ps.clear_queue(PowerKind.RAISE, 0)
+    assert n == n_queued_before
+    assert ps.pool[0] == pool_before + 5.0 * n
+    assert (0, int(PowerKind.RAISE)) not in ps.queues
+    # Clear on an empty queue is a no-op.
+    assert ps.clear_queue(PowerKind.RAISE, 0) == 0
+
+
+def test_30_queued_invalid_burns_and_logs(make_env):
+    """A queued cast whose tile is no longer valid at dispatch burns
+    silently — cooldown set, no refund, queued_invalid scripture line."""
+    cm, world, food, belief, ps, _ = make_env()
+    _stuff_population(cm, world, 20, faction=0)
+    _wire_mutate_tile(ps, world, food, cm)
+    world.tiles[5, 5] = int(Tile.GRASS)
+    ps.pool[0] = 100.0
+    # Fire one (cools), queue one targeting GRASS at (6, 5).
+    ps.cast_or_queue(PowerKind.RAISE, 0, 5, 5, cm, world, food, belief, sim_t=0.0)
+    ps.cast_or_queue(PowerKind.RAISE, 0, 6, 5, cm, world, food, belief, sim_t=0.0)
+    pool_after_enqueue = ps.pool[0]
+    log_len_before = len(ps.scripture_log)
+    # Simulate the world moving on: someone else takes (6, 5) to MOUNTAIN.
+    world.tiles[5, 6] = int(Tile.MOUNTAIN)
+    # Tick past cooldown (pool regens during tick — capture state right
+    # before drain so we can prove drain itself debited/refunded nothing).
+    for _ in range(int(2.5 / 0.2)):
+        ps.tick(0.2, cm, sim_t=0.0)
+    pool_pre_drain = ps.pool[0]
+    drained = ps.drain_queues(cm, world, food, belief, sim_t=2.5)
+    assert drained == 1
+    # World still MOUNTAIN — burn did NOT raise it.
+    assert int(world.tiles[5, 6]) == int(Tile.MOUNTAIN)
+    # Drain itself neither refunded nor debited — pool unchanged across drain.
+    assert ps.pool[0] == pool_pre_drain
+    # Pool still below pool_after_enqueue + 5 — no refund happened.
+    assert ps.pool[0] < pool_after_enqueue + 5.0
+    # Cooldown set anyway.
+    assert ps.cooldowns.get((0, int(PowerKind.RAISE)), 0.0) > 0.0
+    # Scripture line emitted with queued_invalid pattern (test fixture has
+    # no queued_invalid lines so picker returns the placeholder).
+    assert len(ps.scripture_log) > log_len_before
+    assert ps.scripture_log[-1].line == "<queued_invalid>"
+
+
+def test_31_queue_cap_blocks_overflow(make_env):
+    """Beyond queue_cap, enqueue fails with 'queue full' and pool stays."""
+    cm, world, food, belief, ps, _ = make_env()
+    _stuff_population(cm, world, 20, faction=0)
+    _wire_mutate_tile(ps, world, food, cm)
+    # Shrink cap for the test. PowerConfig is frozen so we swap the cfg field.
+    import dataclasses as _dc
+    ps.cfg = _dc.replace(ps.cfg, queue_cap=3)
+    ps.pool[0] = 100.0
+    # Fire one (cools), queue three (hits cap).
+    ps.cast_or_queue(PowerKind.RAISE, 0, 5, 5, cm, world, food, belief, sim_t=0.0)
+    for x in (6, 7, 8):
+        r = ps.cast_or_queue(PowerKind.RAISE, 0, x, 5, cm, world, food, belief, sim_t=0.0)
+        assert r.ok, r.reason
+    pool_at_cap = ps.pool[0]
+    # 4th enqueue should fail with 'queue full' and not debit.
+    r = ps.cast_or_queue(PowerKind.RAISE, 0, 9, 5, cm, world, food, belief, sim_t=0.0)
+    assert not r.ok
+    assert r.reason == "queue full"
+    assert ps.pool[0] == pool_at_cap
+    assert len(ps.queues[(0, int(PowerKind.RAISE))]) == 3
+
+
+def test_32_brush_scripture_suppression(make_env):
+    """P3-Brush: bulk Raise/Lower emits one scripture line per click.
+
+    Mirrors the main.py brush loop: tile #1 goes through with
+    `suppress_scripture=False`, tiles 2..N**2 go through with True.
+    The first tile fires immediately and emits; the rest queue silently
+    and stay silent on dispatch (both valid and invalid paths)."""
+    cm, world, food, belief, ps, _ = make_env()
+    _stuff_population(cm, world, 20, faction=0)
+    _wire_mutate_tile(ps, world, food, cm)
+    ps.pool[0] = 200.0
+    # All-grass world from the fixture; pick a 4x4 brush footprint.
+    bx, by = 4, 4
+    n = 4
+    sim_t = 0.0
+    log_before = len(ps.scripture_log)
+    pool_before = ps.pool[0]
+    is_first = True
+    for dx in range(n):
+        for dy in range(n):
+            r = ps.cast_or_queue(
+                PowerKind.RAISE, 0, bx + dx, by + dy,
+                cm, world, food, belief, sim_t=sim_t,
+                suppress_scripture=not is_first,
+            )
+            assert r.ok, r.reason
+            if r.ok:
+                is_first = False
+    # 16 calls => 1 immediate cast + 15 queued.
+    assert len(ps.queues[(0, int(PowerKind.RAISE))]) == 15
+    # Only the first tile emitted scripture.
+    assert len(ps.scripture_log) == log_before + 1
+    # Belief debited per tile (16 * 5.0 = 80.0).
+    assert math.isclose(pool_before - ps.pool[0], 16 * 5.0, abs_tol=1e-6)
+
+    # Drain all 15 queued. Each drain call should dispatch silently —
+    # the log length never grows across a single drain_queues call.
+    # (We can't simply check the final log length because the rhetoric
+    # fade-prune in tick() will evict the initial entry past
+    # `rhetoric_fade_seconds`; what matters is that drain itself never
+    # appends.)
+    for _ in range(20):  # ~48 sim_sec total — plenty for 15 queued @ 2s/each
+        for _step in range(int(2.5 / 0.2)):
+            ps.tick(0.2, cm, sim_t=sim_t)
+            sim_t += 0.2
+        before_drain = len(ps.scripture_log)
+        ps.drain_queues(cm, world, food, belief, sim_t=sim_t)
+        after_drain = len(ps.scripture_log)
+        assert after_drain == before_drain, (
+            f"queued drain emitted scripture (was {before_drain}, "
+            f"now {after_drain}, sim_t={sim_t:.1f})"
+        )
+        if not ps.queues.get((0, int(PowerKind.RAISE))):
+            break
+    assert not ps.queues.get((0, int(PowerKind.RAISE))), "queue did not drain"
+
+
+def test_33_brush_suppression_invalid_path_also_silent(make_env):
+    """If a suppressed queued tile is invalid at dispatch, the
+    queued_invalid scripture line is also suppressed — otherwise a 4x4
+    brush over a mountain ridge would still spam the log."""
+    cm, world, food, belief, ps, _ = make_env()
+    _stuff_population(cm, world, 20, faction=0)
+    _wire_mutate_tile(ps, world, food, cm)
+    # Two tiles for a controlled 2-cast sequence: first fires, second
+    # queues with suppress=True and becomes invalid before dispatch.
+    world.tiles[5, 5] = int(Tile.GRASS)
+    world.tiles[5, 6] = int(Tile.GRASS)
+    ps.pool[0] = 100.0
+    ps.cast_or_queue(PowerKind.RAISE, 0, 5, 5, cm, world, food, belief,
+                     sim_t=0.0, suppress_scripture=False)
+    ps.cast_or_queue(PowerKind.RAISE, 0, 6, 5, cm, world, food, belief,
+                     sim_t=0.0, suppress_scripture=True)
+    log_len_before = len(ps.scripture_log)   # 1 (the immediate)
+    # World moves on — (6, 5) becomes MOUNTAIN; queued dispatch will
+    # take the invalid path.
+    world.tiles[5, 6] = int(Tile.MOUNTAIN)
+    for _ in range(int(2.5 / 0.2)):
+        ps.tick(0.2, cm, sim_t=0.0)
+    ps.drain_queues(cm, world, food, belief, sim_t=2.5)
+    # No new scripture line — the suppression covers the invalid path too.
+    assert len(ps.scripture_log) == log_len_before
 

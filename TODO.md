@@ -23,6 +23,7 @@
 - [x] ~~**Death-frame sprite.**~~ — done 2026-05-21. Alpha-fade rather than a new sprite; cheaper and pairs with the existing belief-fade smoothly.
 - [x] ~~**EATING frame.**~~ — done 2026-05-21. 4th frame per (faction, facing) with the mouth-outline pixels suppressed; renderer cycles 0 ↔ 3 every 0.4 sim sec.
 - [ ] Final HUD pass: settings menu, pause menu, end-of-round screen.
+- [ ] **Camera zoom.** Discrete steps (0.5x / 1x / 2x / 4x), mouse-wheel bound. `pygame.transform.scale` (nearest) for the pixel-perfect fast path; optional `smoothscale` (bilinear) toggle for the antialias-ish smooth path. Camera bounds scale with zoom factor. Matthew prefers speed > quality. Vector renderer (when it lands) will get this for free.
 
 ## Prototype P0 — Pixel world (SHIPPED 2026-05-20)
 - [x] Project skeleton.
@@ -108,6 +109,14 @@
 - [x] Food field cap+regen recomputed from biome for the new tile.
 - [x] Drown rule — citizens on a newly-unwalkable tile transition to DYING via `CitizenManager.drown_at()`.
 - [x] Tests 12-15 from spec §12 (live as test_21-test_24, 24 P3 tests total).
+
+## Prototype P3-Brush — Bulk Raise / Lower (SHIPPED 2026-05-22)
+- [x] `brush_size: int = 1..4` state in `main.py`; `+`/`-` (top row + keypad + underscore) modulate. Brush persists across mode switches; only effective in Raise/Lower.
+- [x] LMB on Raise/Lower with brush > 1 expands to an N×N top-left-anchored square via the existing `cast_or_queue` loop. No changes to `powers.py` queue logic.
+- [x] `blit_cast_preview` shows the brush footprint as a filled rect with grid-lines and the validity-tinted border when brush > 1. Chip text shows total cost + brush dims.
+- [x] `QueuedCast.suppress_scripture: bool` + `cast()` / `cast_or_queue()` kwargs. Brush sets `True` for tiles 2..N²; first tile of the brush carries the scripture voice. Both the valid and `queued_invalid` paths in `_dispatch_queued` honour the flag.
+- [x] 2 new tests (`test_32`, `test_33`) — 89 total. Both cover the immediate path + queue-drain path + invalid-tile fallback under suppression.
+- [x] Debug overlay shows `Raise brush 4x4 (16t)` + `+/- brush (R/L)` help.
 
 ## Prototype P3 PR3 — Religious Relics
 - [ ] `densitas/relics.py` — `Relic`, `RelicManager`, `RelicState` (AVAILABLE/PLACED/SHATTERED).

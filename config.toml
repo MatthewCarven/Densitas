@@ -57,13 +57,14 @@ eat_amount              = 0.20    # (unused; bite_size + calorie_per_food drive 
 eat_duration            = 1.00    # sim sec spent in EATING per visit
 bite_size               = 0.20    # tile food consumed per EATING tick
 calorie_per_food        = 1.00    # 1 unit food reduces hunger by this much
+satiation_cap           = 0.50    # how far below 0 hunger can dip — 'fat reserves'
 forage_radius_tiles     = 8
 min_forage_food         = 0.10    # ignore tiles below this (lowered with caps)
 overlay_alpha_max       = 160
 
 [food.biome]
 # Caps and regens scaled so total ~100 food/sec regen, refill in ~150 sim sec.
-forest_initial    = 1.00
+forest_initial    = 1.20
 forest_regen      = 0.007
 grass_initial     = 0.80
 grass_regen       = 0.005
@@ -100,6 +101,9 @@ inspire_radius        = 4
 hunger_pang_radius    = 0
 bless_radius          = 4
 curse_radius          = 4
+
+# Cast queue — Raise/Lower can be click-chained (Densitas_queue.md).
+queue_cap             = 256     # max pending casts per (faction, queueable kind)
 
 [powers.relic]
 # PR3 lands the relic state machine — config block is here now so the

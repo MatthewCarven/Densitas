@@ -99,6 +99,7 @@ class FoodConfig:
     eat_duration: float
     bite_size: float
     calorie_per_food: float
+    satiation_cap: float
     forage_radius_tiles: int
     min_forage_food: float
     overlay_alpha_max: int
@@ -146,6 +147,8 @@ class PowerConfig:
     hunger_pang_radius: int
     bless_radius: int
     curse_radius: int
+    # P3-Queue — cast queue (Raise / Lower).
+    queue_cap: int    # max pending QueuedCasts per (faction, queueable kind)
     relic: RelicConfig
 
 

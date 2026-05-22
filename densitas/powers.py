@@ -19,6 +19,12 @@ P3 PR2 ships:
   so powers.py stays renderer-agnostic). Drown rule runs in the caller's
   closure after a successful mutation.
 
+P3-Queue ships (Densitas_queue.md):
+  Click-chain queue for Raise / Lower. `cast_or_queue` enqueues when the
+  power is on cooldown (or the queue is non-empty); `drain_queues` pops
+  one entry per cleared cooldown and dispatches it. Belief debits on
+  enqueue; cancel refunds; invalid-at-dispatch burns silently.
+
 PR3 adds Relics.
 
 The dispatch table is a dict of callables so each new power kind in P5
@@ -118,6 +124,40 @@ class CastReceipt:
     reason: str = ""
 
 
+@dataclass
+class QueuedCast:
+    """One pending cast in the per-(faction, kind) queue (Densitas_queue.md).
+
+    `paid` records the belief actually debited at enqueue so cancel
+    refunds the exact amount — protects us from a future where cost
+    depends on local conditions.
+
+    `suppress_scripture` is set by the caller (P3-Brush) so a single
+    bulk-click motion emits exactly one scripture line — the brush's
+    first tile carries the voice; tiles 2..N**2 dispatch silently.
+    Default False keeps single-tile click-chains emitting per-tile,
+    matching the pre-brush queue behaviour.
+    """
+    kind: PowerKind
+    faction: int
+    tx: int
+    ty: int
+    queued_at: float
+    paid: float
+    suppress_scripture: bool = False
+
+
+# Powers the player can chain via LMB while a previous cast is cooling.
+# Extending this set is a one-line change.
+QUEUEABLE_KINDS: frozenset[int] = frozenset({
+    int(PowerKind.RAISE), int(PowerKind.LOWER),
+})
+
+
+def _is_queueable(kind: PowerKind) -> bool:
+    return int(kind) in QUEUEABLE_KINDS
+
+
 class PowerSystem:
     """Owns belief pool, cooldowns, active effects, scripture log.
 
@@ -151,6 +191,9 @@ class PowerSystem:
         self.effects: list[ActiveEffect] = []
         # Scripture log. List of ScriptureEntry, FIFO. Old entries pruned by sim_t.
         self.scripture_log: list[ScriptureEntry] = []
+        # P3-Queue — pending click-chain casts per (faction, kind). FIFO.
+        # See Densitas_queue.md. Drained by `drain_queues()`.
+        self.queues: dict[tuple[int, int], list[QueuedCast]] = {}
         # Hooks (None = stub; tests pass mocks).
         self._rhetoric = rhetoric_pick or (lambda p, g, t: f"<{p}>")
         self._mutate_tile = mutate_tile  # used by Raise/Lower in PR2
@@ -197,8 +240,15 @@ class PowerSystem:
     def can_cast(
         self, kind: PowerKind, faction: int, tx: int, ty: int,
         citizens: CitizenManager, world: World,
+        *, skip_cooldown: bool = False,
     ) -> tuple[bool, str]:
-        """Return (ok, reason). Reason is a short HUD string."""
+        """Return (ok, reason). Reason is a short HUD string.
+
+        `skip_cooldown=True` is for the queue-enqueue validation path
+        (Densitas_queue.md) — the caller already knows the power is
+        cooling and wants to add to the queue; tier / pool / bounds /
+        tile checks still apply.
+        """
         spec = POWERS.get(kind)
         if spec is None:
             return False, f"unknown power"
@@ -209,9 +259,10 @@ class PowerSystem:
             return False, f"need T{spec.tier - 1}"
 
         # Cooldown.
-        cd = self.cooldowns.get((faction, int(kind)), 0.0)
-        if cd > 0.0:
-            return False, f"cooling {cd:.1f}s"
+        if not skip_cooldown:
+            cd = self.cooldowns.get((faction, int(kind)), 0.0)
+            if cd > 0.0:
+                return False, f"cooling {cd:.1f}s"
 
         # Belief cost.
         if self.pool[faction] < spec.belief_cost - 1e-6:
@@ -242,8 +293,15 @@ class PowerSystem:
         food,
         belief: BeliefField,
         sim_t: float,
+        suppress_scripture: bool = False,
     ) -> CastReceipt:
-        """Validate, debit, dispatch, log. Returns a CastReceipt."""
+        """Validate, debit, dispatch, log. Returns a CastReceipt.
+
+        `suppress_scripture` lets the brush caller (P3-Brush) silence
+        the scripture line for tiles 2..N**2 of a bulk Raise/Lower so
+        one click yields one voice. Validation failures never emit
+        scripture either way.
+        """
         ok, reason = self.can_cast(kind, faction, tx, ty, citizens, world)
         if not ok:
             return CastReceipt(kind, faction, int(tx), int(ty), sim_t, sim_t,
@@ -271,12 +329,14 @@ class PowerSystem:
             sim_t=sim_t,
         )
 
-        # Scripture.
-        god_key = _god_key_for(faction)
-        line = self._rhetoric(spec.rhetoric_key, god_key, sim_t)
-        self.scripture_log.append(ScriptureEntry(sim_t, line, kind, faction))
-        if len(self.scripture_log) > self.cfg.scripture_log_max:
-            self.scripture_log = self.scripture_log[-self.cfg.scripture_log_max:]
+        # Scripture (suppressed by P3-Brush on tiles 2..N**2 of a bulk
+        # cast — the first tile of the brush carries the voice).
+        if not suppress_scripture:
+            god_key = _god_key_for(faction)
+            line = self._rhetoric(spec.rhetoric_key, god_key, sim_t)
+            self.scripture_log.append(ScriptureEntry(sim_t, line, kind, faction))
+            if len(self.scripture_log) > self.cfg.scripture_log_max:
+                self.scripture_log = self.scripture_log[-self.cfg.scripture_log_max:]
 
         return CastReceipt(kind, faction, int(tx), int(ty), sim_t, sim_t,
                             ok=True, reason="")
@@ -357,6 +417,161 @@ class PowerSystem:
         if new == old:
             return
         self._mutate_tile(tx, ty, new)
+
+    # -- queue --------------------------------------------------------------
+
+    def cast_or_queue(
+        self,
+        kind: PowerKind,
+        faction: int,
+        tx: int,
+        ty: int,
+        citizens: CitizenManager,
+        world: World,
+        food,
+        belief: BeliefField,
+        sim_t: float,
+        suppress_scripture: bool = False,
+    ) -> CastReceipt:
+        """Fire immediately if ready, else enqueue (Densitas_queue.md).
+
+        Non-queueable kinds always go through `cast()` unchanged. For
+        queueable kinds, the ready path is *both* cooldown clear AND queue
+        empty — so a new click never jumps ahead of already-queued tiles.
+
+        `suppress_scripture` (P3-Brush) silences this cast's scripture
+        line so a bulk Raise/Lower click emits exactly one voice for the
+        whole NxN brush. The flag is forwarded to `cast()` on the
+        immediate path and stored on the `QueuedCast` on the queue path
+        so the suppression survives the dispatch delay.
+        """
+        if not _is_queueable(kind):
+            return self.cast(kind, faction, tx, ty, citizens, world,
+                             food, belief, sim_t,
+                             suppress_scripture=suppress_scripture)
+        key = (faction, int(kind))
+        cd = self.cooldowns.get(key, 0.0)
+        q = self.queues.get(key, [])
+        if cd <= 0.0 and not q:
+            return self.cast(kind, faction, tx, ty, citizens, world,
+                             food, belief, sim_t,
+                             suppress_scripture=suppress_scripture)
+        # Queue path: validate (skipping the cooldown check we know about),
+        # debit belief, push to back.
+        ok, reason = self.can_cast(kind, faction, tx, ty, citizens, world,
+                                    skip_cooldown=True)
+        if not ok:
+            return CastReceipt(kind, faction, int(tx), int(ty), sim_t, sim_t,
+                                ok=False, reason=reason)
+        spec = POWERS[kind]
+        q = self.queues.setdefault(key, [])
+        if len(q) >= self.cfg.queue_cap:
+            return CastReceipt(kind, faction, int(tx), int(ty), sim_t, sim_t,
+                                ok=False, reason="queue full")
+        self.pool[faction] -= spec.belief_cost
+        if self.pool[faction] < 0.0:
+            self.pool[faction] = 0.0
+        q.append(QueuedCast(
+            kind=kind, faction=faction, tx=int(tx), ty=int(ty),
+            queued_at=sim_t, paid=spec.belief_cost,
+            suppress_scripture=suppress_scripture,
+        ))
+        return CastReceipt(kind, faction, int(tx), int(ty), sim_t, sim_t,
+                            ok=True, reason="queued")
+
+    def drain_queues(
+        self,
+        citizens: CitizenManager,
+        world: World,
+        food,
+        belief: BeliefField,
+        sim_t: float,
+    ) -> int:
+        """Pop and dispatch one queued cast per (faction, kind) whose
+        cooldown has cleared. Returns the count drained this call.
+
+        Called from the main loop *after* `tick()` so a just-cleared
+        cooldown can dispatch in the same sim step.
+        """
+        drained = 0
+        for key, q in list(self.queues.items()):
+            if not q:
+                del self.queues[key]
+                continue
+            if self.cooldowns.get(key, 0.0) > 0.0:
+                continue
+            qc = q.pop(0)
+            self._dispatch_queued(qc, citizens, world, food, belief, sim_t)
+            drained += 1
+            if not q:
+                del self.queues[key]
+        return drained
+
+    def cancel_queued_at(self, tx: int, ty: int, kind: PowerKind,
+                          faction: int) -> bool:
+        """Remove the first QueuedCast matching (tx, ty, kind, faction)
+        and refund its `paid` cost. Returns True if something was cancelled.
+        """
+        key = (faction, int(kind))
+        q = self.queues.get(key)
+        if not q:
+            return False
+        for i, qc in enumerate(q):
+            if qc.tx == int(tx) and qc.ty == int(ty):
+                self.pool[faction] += qc.paid
+                del q[i]
+                if not q:
+                    del self.queues[key]
+                return True
+        return False
+
+    def clear_queue(self, kind: PowerKind, faction: int) -> int:
+        """Refund every queued cast for (kind, faction). Returns count
+        cleared."""
+        key = (faction, int(kind))
+        q = self.queues.pop(key, [])
+        if q:
+            self.pool[faction] += sum(qc.paid for qc in q)
+        return len(q)
+
+    def _dispatch_queued(self, qc: "QueuedCast",
+                         citizens: CitizenManager, world: World,
+                         food, belief: BeliefField, sim_t: float) -> None:
+        """Run a queued cast. Re-validate the tile; on invalid, burn the
+        cooldown silently with a `queued_invalid` scripture line (no refund
+        — the gesture happened, the world moved on).
+
+        P3-Brush: when `qc.suppress_scripture` is set (tiles 2..N**2 of
+        a bulk Raise/Lower), no scripture line is appended on either the
+        valid or invalid path. The brush's first tile carries the voice
+        for the whole motion.
+        """
+        spec = POWERS[qc.kind]
+        tile_id = int(world.tiles[qc.ty, qc.tx])
+        ok, _reason = _tile_valid_for(qc.kind, tile_id)
+        god_key = _god_key_for(qc.faction)
+        if not ok:
+            self.cooldowns[(qc.faction, int(qc.kind))] = spec.cooldown
+            if not qc.suppress_scripture:
+                line = self._rhetoric("queued_invalid", god_key, sim_t)
+                self.scripture_log.append(
+                    ScriptureEntry(sim_t, line, qc.kind, qc.faction))
+            return
+        # Set cooldown, then dispatch (belief was debited at enqueue).
+        self.cooldowns[(qc.faction, int(qc.kind))] = spec.cooldown
+        local_b = belief.query(qc.tx, qc.ty, qc.faction)
+        kt_idx = max(0, min(len(self.cfg.k_tier) - 1, spec.tier - 1))
+        k = self.cfg.k_tier[kt_idx]
+        strength = max(0.0, local_b) / max(1e-3, k)
+        self._dispatch[qc.kind](
+            faction=qc.faction, tx=qc.tx, ty=qc.ty, strength=strength,
+            citizens=citizens, world=world, food=food, belief=belief,
+            sim_t=sim_t,
+        )
+        if not qc.suppress_scripture:
+            line = self._rhetoric(spec.rhetoric_key, god_key, sim_t)
+            self.scripture_log.append(
+                ScriptureEntry(sim_t, line, qc.kind, qc.faction))
 
     # -- internals ----------------------------------------------------------
 
