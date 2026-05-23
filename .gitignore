@@ -23,6 +23,8 @@ ENV/
 .coverage.*
 .tox/
 htmlcov/
+# Per-session pytest cache directories (created when .pytest_cache is locked).
+pytest-cache-files-*/
 
 # --- Type checkers / linters ---
 .mypy_cache/
@@ -62,3 +64,15 @@ playtest/
 p0_world_thumb.png
 p0_viewport.png
 *.debug.png
+
+# --- Cowork session scratch (added 2026-05-22) ---
+# Throwaway helpers produced during Claude-assisted sessions: per-PR
+# `add_X.cmd` stagers, `commit_msg_X.txt` message stashes, `commit_X.cmd`
+# commit-and-push scripts, and `verify_X.cmd` post-write sanity checks.
+# Useful during the work, noise afterward.
+add_*.cmd
+commit_*.cmd
+commit_msg_*.txt
+verify_*.cmd
+# Atomic-rename temp files left over if a write was interrupted.
+*.tmp

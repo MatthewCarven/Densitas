@@ -325,3 +325,58 @@ Verified: `ast.parse` clean on the patched render.py, SHA matches between staged
 (`test_32_brush_scripture_suppression`) is unrelated - test_powers.py has no references to
 RELIC_SPRITE_SIZE_PX, sprite size, glyphs, or render; pre-existing and outside this change's
 blast radius.
+
+---
+
+## 2026-05-22 - PR3 step 1: relics data model + RelicManager
+
+First slice of PR3. The on-screen preview is unchanged - six relics still
+seed near spawn and render at 32 px - but the source of truth is now a real
+`RelicManager` instead of a hardcoded SimpleNamespace list. The state
+machine is live; the belief / attractor / shatter wiring lands in PR3
+steps 2-4.
+
+Changes:
+
+- `densitas/relics.py` (new, 14.2 KB) - `RelicState` (AVAILABLE / PLACED /
+  SHATTERED), `Relic` dataclass with all 13 spec fields, `ShatterSummary`
+  (12 fields ready for step 4), `RelicManager` with place / move /
+  retrieve / get / for_faction / placed_for_faction. `tick()` and
+  `shatter_at()` are stubs - except tick() already accumulates
+  `_placed_time_accum` so the eventual shatter summary's
+  `time_placed_total` is honest from step 4 onward. Name table per the
+  lore: Open Eye = Witnesses, Maw = Bites.
+- `densitas/main.py` - replaced the SimpleNamespace `test_relics` list
+  with a real `RelicManager(cfg.powers.relic, n_factions=2)` seeded with
+  the same six placements via `place()`. One seed (Open Eye NW) nudged
+  from (-3,-2) to (-4,-1) so it lands on a walkable tile for seed=0;
+  the other five were already walkable. Render call now iterates
+  `relic_mgr.relics` filtered to PLACED. K key remains a render-only
+  hide toggle.
+- `tests/test_relics.py` (new, 13.3 KB) - 24 tests covering spec tests
+  #1-#4 plus 20 smoke / edge cases (same-faction occupancy, cross-faction
+  tile sharing, no-op move-to-self, retrieve-then-replace times_moved
+  persistence, SHATTERED-state mutation rejection, ID stability,
+  out-of-range get(), tick() accumulator). All 24 pass.
+- `.gitignore` - added a Cowork-session-scratch block (`add_*.cmd`,
+  `commit_*.cmd`, `commit_msg_*.txt`, `verify_*.cmd`, `*.tmp`,
+  `pytest-cache-files-*/`). Keeps `git status` clean across
+  Claude-assisted sessions.
+
+Tests: 113 / 113 pass headlessly (89 prior + 24 new),
+`SDL_VIDEODRIVER=dummy`, `--assert=plain`, fresh cache. Smoke-run
+confirmed 6/6 seed placements succeed against the default-seed world.
+
+**Lesson re-learned the hard way:** the `Edit` tool truncates files in
+`/outputs` too, not just on the Densitas mount. Mid-session I tried to
+tweak one byte of the patched main.py via Edit and it nuked the file's
+tail at the `if __name__ ==` line. Recovery: rebuild via a Python
+heredoc in bash, parse-validate, atomic-rename. The patcher script
+I'd written earlier (`patch_main_for_relics.py`) ALSO got truncated
+by Edit. Rule: never Edit a staged file - build a fresh one via
+inline Python and write whole.
+
+Next session: PR3 step 2 - belief field _scatter_relics + amplitude
+fade-in. Spec is in `Densitas_relics.md` section 7. The data model
+lands the `placed_at` / `amplitude` / `place_cooldown` plumbing that
+step 2 will consume.

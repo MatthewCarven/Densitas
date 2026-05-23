@@ -24,7 +24,6 @@ but only takes effect in Raise/Lower.
 from __future__ import annotations
 import sys
 import time
-import types
 from typing import Optional
 
 import pygame
@@ -39,6 +38,7 @@ from .food import FoodField
 from .hud import HUD
 from .powers import PowerSystem, PowerKind, POWERS
 from .rhetoric import Rhetoric, make_picker
+from .relics import RelicManager, RelicState
 
 
 # Keyboard bindings for power-mode selection. (Pygame keysym -> PowerKind)
@@ -171,21 +171,33 @@ def main(argv: list[str] | None = None) -> int:
     show_debug = True
     show_belief_overlay = False
     show_food_overlay = False
-    show_relics = True   # toggle with `K` - pre-PR3 visual-sanity hook.
+    show_relics = True   # toggle with `K` - render-only hide for screenshots / eyeballing.
 
-    # Pre-PR3 hardcoded test list - six relics seeded near the spawn so we
-    # can see anchor, depth-sort with citizens, and both faction glyphs at
-    # a glance. PR3 replaces this with `RelicManager.placed_for_faction(...)`.
-    # TODO(PR3): remove once `densitas/relics.py` lands.
+    # PR3 step 1 (2026-05-22): real RelicManager replaces the pre-PR3
+    # SimpleNamespace list. We seed with the same six placements so the
+    # on-screen preview is unchanged. The state machine is live: any
+    # PLACED relic on the map already participates in `placed_for_faction`.
+    # Belief contribution / attractors / shatter rule arrive in PR3
+    # steps 2-4.
+    relic_mgr = RelicManager(cfg.powers.relic, n_factions=2)
     cx_, cy_ = world.width // 2, world.height // 2
-    test_relics: list = [
-        types.SimpleNamespace(faction=0, tx=cx_ - 3, ty=cy_ - 2),   # NW
-        types.SimpleNamespace(faction=0, tx=cx_ + 3, ty=cy_),       # E (in the cluster)
-        types.SimpleNamespace(faction=0, tx=cx_ - 8, ty=cy_ - 6),   # far NW (alone)
-        types.SimpleNamespace(faction=1, tx=cx_,     ty=cy_ + 4),   # rival S
-        types.SimpleNamespace(faction=1, tx=cx_ + 5, ty=cy_ + 3),   # rival SE
-        types.SimpleNamespace(faction=1, tx=cx_ + 1, ty=cy_ + 5),   # rival cluster
-    ]
+    _seed_placements: tuple[tuple[int, int, int, int], ...] = (
+        # (faction, slot, dx, dy)
+        (0, 0, -4, -1),   # Open Eye  - NW (walkable for seed=0; (-3,-2) lands on a hill)
+        (0, 1,  3,  0),   # Open Eye  - E (in the cluster)
+        (0, 2, -8, -6),   # Open Eye  - far NW (alone)
+        (1, 0,  0,  4),   # Maw       - rival S
+        (1, 1,  5,  3),   # Maw       - rival SE
+        (1, 2,  1,  5),   # Maw       - rival cluster
+    )
+    for _f, _s, _dx, _dy in _seed_placements:
+        _ok, _why = relic_mgr.place(_f, _s, cx_ + _dx, cy_ + _dy,
+                                      world, sim_t=0.0)
+        if not _ok:
+            # Don't crash - just log and move on. A seed tile may land
+            # on water for an unusual world seed; the preview can
+            # cope with fewer than six relics on screen.
+            print(f"  relic seed skipped (f{_f} s{_s}): {_why}")
     active_mode: Optional[PowerKind] = None
     # Brush size for bulk Raise/Lower (side length, so tile count = brush_size**2).
     # 1..4 -> 1, 4, 9, 16 tiles. Persists across mode switches; only effective
@@ -219,7 +231,7 @@ def main(argv: list[str] | None = None) -> int:
                 elif event.key == pygame.K_f:
                     show_food_overlay = not show_food_overlay
                 elif event.key == pygame.K_k:
-                    # Pre-PR3: toggle the hardcoded relic test list.
+                    # Render-only toggle - does not mutate RelicManager state.
                     show_relics = not show_relics
                 elif event.key == pygame.K_c:
                     # P3-Queue: clear the queue for the current mode.
@@ -341,12 +353,16 @@ def main(argv: list[str] | None = None) -> int:
             renderer.blit_food_overlay(screen, food, cam.x, cam.y)
         if show_belief_overlay:
             renderer.blit_belief_overlay(screen, belief, cam.x, cam.y)
-        # Pre-PR3 visual-sanity slice - relics blit between the world
-        # surface (+ overlays) and citizens, so a citizen on the same
-        # tile walks visibly over the relic's base. PR3 replaces the
-        # `test_relics` list with `RelicManager.placed_for_faction(...)`.
+        # Relics blit between the world surface (+ overlays) and
+        # citizens, so a citizen on the same tile walks visibly over
+        # the relic's base. PR3 step 1: source is the live
+        # `RelicManager`, filtered to currently-PLACED relics across
+        # all factions. Iteration order follows `relics` list order
+        # (faction-major, slot-minor) which gives consistent z-order.
         if show_relics:
-            renderer.blit_relics(screen, test_relics, cam.x, cam.y, sim_time)
+            _placed = [r for r in relic_mgr.relics
+                       if r.state == RelicState.PLACED]
+            renderer.blit_relics(screen, _placed, cam.x, cam.y, sim_time)
         renderer.blit_citizens(screen, citizen_mgr.iter_for_render(), cam.x, cam.y, sim_time)
 
         # P3-Queue: queued-cast chevrons sit above citizens, below preview.
