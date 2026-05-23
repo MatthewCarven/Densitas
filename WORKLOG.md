@@ -498,3 +498,101 @@ SHATTERED when threshold sustains for `shatter_time`, builds the
 `ShatterSummary`. Spec is in `Densitas_relics.md` section 9. The
 data model already exposes the 12 summary fields and `threat_timer`
 / `_placed_time_accum` plumbing, so step 4 is mostly tick-loop math.
+
+---
+
+## 2026-05-22 - PR3 step 4: shatter rule + ShatterSummary
+
+Builds on PR3 step 3 (`41dee2a`). The full relic lifecycle is now
+live: AVAILABLE -> PLACED -> SHATTERED with belief contribution
+(step 2), citizen attractors (step 3), and now the shatter rule
+that fires when rival belief sustains above the threshold.
+
+Changes:
+
+- `densitas/relics.py` - replaced the step-1 no-op `tick()` stub
+  with the real shatter rule per spec section 9. For each PLACED
+  relic each sim-tick: query player + rival belief at the relic's
+  tile; if `rival > shatter_ratio * max(player, 1e-3)` accumulate
+  `threat_timer += dt`; else decay at 2x dt (sustained pressure
+  required - a 1-sec rival incursion erases ~2 sec of threat).
+  When `threat_timer >= shatter_time` (8 sec default), transition
+  PLACED -> SHATTERED, snapshot a populated `ShatterSummary`
+  (12 fields), append to returned list. Position kept post-shatter
+  so PR3 step 7's crack/flash animation can render at the site.
+  New `_build_shatter_summary` helper does the citizen count
+  (Euclidean radius 8, same as attractor disc). Defensive
+  `belief=None or citizens=None` skip-path preserves step-1's
+  accumulator-only contract for tests that don't have a belief
+  field handy.
+- `densitas/main.py` - per-sim-tick after `belief.recompute`:
+  `_shattered = relic_mgr.tick(tick_dt, belief, citizen_mgr, sim_t)`.
+  If non-empty: re-sync attractors so SHATTERED relics stop pulling
+  citizens, and stdout-log each shatter with all 8 stat fields
+  (god name / tile / belief p+r / citizen counts p+r / total
+  placement time / move count). Scripture/panel/animation wiring
+  land in later PR3 steps (12, 9, 7 respectively); this log is
+  the dev-playtest stand-in.
+- `tests/test_relics.py` - 8 new tests (41 -> 49 in this file):
+  spec #7 (sustained pressure -> shatter, all 12 summary fields
+  validated), #8 (4-sec incursion + 6-sec recovery -> no shatter,
+  threat_timer back to 0), #12 (move during fade-in resets the
+  belief-weight clock), plus smoke: no double-shatter on next
+  tick after SHATTERED, None-belief preserves the stub contract,
+  edge-case balanced 1.5x pressure does NOT shatter (strict
+  greater-than rule), summary citizen count respects radius 8,
+  post-shatter mutations still rejected.
+
+Tests: **138 / 138 pass** headlessly (89 original + 24 step-1 +
+9 step-2 + 8 step-3 + 8 step-4), `SDL_VIDEODRIVER=dummy`,
+`--assert=plain`, fresh cache.
+
+PR3 is now functionally complete for solo play: place relics,
+belief halo brightens, citizens cluster, hunger overrides, and
+a rival who out-believes the player can shatter them. What's
+missing is presentation:
+
+- R / Shift+R input (PR3 step 10) - placement is still seed-only
+- HUD tray showing the 3 slots (PR3 step 8)
+- Shatter summary panel slide-in (PR3 step 9)
+- Crack/flash animation on shatter (PR3 step 7)
+- Scripture pool additions (PR3 step 12)
+- Save / load round-trip (PR3 step 13)
+
+Playtest note: to actually see a shatter in this build, you'd
+need rival belief to sustain >1.5x player at one of your relic
+tiles for 8 sim_sec. With only six seeded relics and no rival
+AI yet, the easiest way is to launch with `--rival-stub-seed 80`
+and wait for rival citizens to congregate around their attractors
+near one of your relics. The stdout log will show the shatter.
+
+**Next session:** PR3 step 10 (R-key placement) is probably the
+next high-value step - it makes the game *interactively*
+playable. Step 7 (animation) and steps 8-9 (HUD/panel) add
+polish but the gameplay loop is otherwise complete.
+
+## 2026-05-23 - hotfix: relic_mgr construction order
+
+Startup crashed on `python -m densitas.main` with
+`UnboundLocalError: cannot access local variable 'relic_mgr'
+where it is not associated with a value` at the initial
+`belief.recompute(...)` call. Step 4 left the RelicManager
+construction ~60 lines too far down the function: the
+BeliefField was being allocated and immediately recomputed
+with `relics=relic_mgr.relics` *before* `relic_mgr` had been
+constructed.
+
+**Fix:** moved the relic_mgr block (RelicManager + the six
+seed placements + `sync_attractors_from_relics`) up so it
+runs right after the citizen / rival-stub setup, before the
+BeliefField allocation. Pure ordering change, no logic touched.
+
+**Verified:**
+
+- ast.parse OK on the rewritten file.
+- 49/49 relic tests still pass headlessly (full suite
+  unchanged).
+- Full `main()` headless smoke run boots through every setup
+  stage and exits 0 cleanly.
+
+Landed via `commit_hotfix_relic_order.cmd`.

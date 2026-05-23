@@ -891,3 +891,324 @@ def test_attractors_pick_uniformly_with_multiple_relics():
         assert ratio >= 0.65, (
             f"attractor split too uneven: {hits_a} vs {hits_b} (ratio {ratio:.2f})"
         )
+
+# ===========================================================================
+# PR3 step 4: shatter rule + ShatterSummary population.
+# Tests #7, #8, #12 from `Densitas_relics.md` section 11, plus smoke.
+# ===========================================================================
+
+import types
+
+from densitas.relics import ShatterSummary
+
+
+class _FakeBelief:
+    """Stub belief field for shatter tests.
+
+    Implements just the API surface `RelicManager.tick` reaches for:
+      - `.n_factions` attribute
+      - `.query(tx, ty, faction=0) -> float`
+
+    Real `BeliefField` rebuilds its grid from citizens + relics on each
+    recompute, which is overkill for testing the shatter math. Keying a
+    dict on (tx, ty, faction) lets each test express exactly the belief
+    pressure that matters.
+    """
+    def __init__(self, n_factions: int = 2,
+                 query_map: dict | None = None) -> None:
+        self.n_factions = n_factions
+        self._q = dict(query_map or {})
+
+    def query(self, tx: int, ty: int, faction: int = 0) -> float:
+        return float(self._q.get((int(tx), int(ty), int(faction)), 0.0))
+
+    def set(self, tx: int, ty: int, faction: int, value: float) -> None:
+        self._q[(int(tx), int(ty), int(faction))] = float(value)
+
+
+def _fake_citizens(n_player_near: int = 0, n_rival_near: int = 0,
+                    relic_tx: int = 0, relic_ty: int = 0):
+    """Build a SimpleNamespace with a `.citizens` list - that's the only
+    thing `_build_shatter_summary` reads on the CitizenManager.
+    Citizens are placed exactly on the relic tile so they all count
+    within the radius-8 disc."""
+    cits = []
+    for i in range(n_player_near):
+        cits.append(types.SimpleNamespace(
+            x=float(relic_tx), y=float(relic_ty), faction=0,
+        ))
+    for i in range(n_rival_near):
+        cits.append(types.SimpleNamespace(
+            x=float(relic_tx), y=float(relic_ty), faction=1,
+        ))
+    return types.SimpleNamespace(citizens=cits)
+
+
+# ---------------------------------------------------------------------------
+# Spec test #7: sustained rival belief above ratio fires SHATTERED.
+# ---------------------------------------------------------------------------
+
+def test_07_sustained_rival_belief_triggers_shatter():
+    """Hold rival belief at >shatter_ratio * player for shatter_time sec;
+    the relic must transition PLACED -> SHATTERED with a populated
+    ShatterSummary on the tick that crosses the threshold."""
+    cfg = _make_relic_cfg()      # shatter_ratio=1.5, shatter_time=8.0
+    mgr = RelicManager(cfg, n_factions=2)
+    w = _make_world(width=64, height=48)
+    mgr.place(0, 0, tx=20, ty=15, world=w, sim_t=0.0)
+
+    # Rival belief 10x player at the relic tile - well above 1.5x.
+    bf = _FakeBelief(n_factions=2, query_map={
+        (20, 15, 0): 1.0,
+        (20, 15, 1): 10.0,
+    })
+    citizens = _fake_citizens(n_player_near=3, n_rival_near=7,
+                                relic_tx=20, relic_ty=15)
+
+    summaries: list[ShatterSummary] = []
+    sim_t = 0.0
+    # 5 Hz tick -> 0.2 dt. 8.0 / 0.2 = 40 ticks to reach shatter_time.
+    for tick in range(60):
+        sim_t += 0.2
+        out = mgr.tick(0.2, bf, citizens, sim_t=sim_t)
+        if out:
+            summaries.extend(out)
+            break
+
+    r = mgr.get(0, 0)
+    assert r.state == RelicState.SHATTERED
+    assert len(summaries) == 1
+    s = summaries[0]
+    # All 12 fields populated and sane.
+    assert s.relic_id == r.id
+    assert s.faction == 0
+    assert s.name == "The First Witness"
+    assert (s.tx, s.ty) == (20, 15)
+    assert s.sim_t > 0.0
+    assert s.local_belief_player == pytest.approx(1.0)
+    assert s.local_belief_rival == pytest.approx(10.0)
+    assert s.player_citizens_within_8 == 3
+    assert s.rival_citizens_within_8 == 7
+    assert s.time_placed_total > 0.0   # accumulator running
+    assert s.times_moved == 0
+
+
+# ---------------------------------------------------------------------------
+# Spec test #8: rival incursion shorter than shatter_time -> threat decays.
+# ---------------------------------------------------------------------------
+
+def test_08_short_incursion_decays_no_shatter():
+    """Rival belief above ratio for 4 sec, then drops to 0. The threat
+    accumulator (4.0) recovers at 2x rate (-0.4/0.2-dt) and would zero
+    out in ~2 sim_sec of safety. Run 6 more sim_sec safe (well past
+    recovery) and assert: still PLACED, threat_timer == 0."""
+    cfg = _make_relic_cfg()
+    mgr = RelicManager(cfg, n_factions=2)
+    w = _make_world(width=64, height=48)
+    mgr.place(0, 0, tx=20, ty=15, world=w, sim_t=0.0)
+
+    bf = _FakeBelief(n_factions=2)
+    citizens = _fake_citizens(relic_tx=20, relic_ty=15)
+
+    # Phase 1: 4 sim_sec of incursion (20 ticks at 0.2s).
+    bf.set(20, 15, 0, 1.0)
+    bf.set(20, 15, 1, 10.0)
+    sim_t = 0.0
+    for _ in range(20):
+        sim_t += 0.2
+        out = mgr.tick(0.2, bf, citizens, sim_t=sim_t)
+        assert out == []   # not enough to shatter yet
+    assert mgr.get(0, 0).threat_timer == pytest.approx(4.0)
+
+    # Phase 2: rival pulls back. 30 ticks (6 sim_sec) of safety - way
+    # more than the 2 sim_sec recovery needs.
+    bf.set(20, 15, 1, 0.0)
+    for _ in range(30):
+        sim_t += 0.2
+        out = mgr.tick(0.2, bf, citizens, sim_t=sim_t)
+        assert out == []
+    r = mgr.get(0, 0)
+    assert r.state == RelicState.PLACED
+    assert r.threat_timer == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# Spec test #12: move during fade-in resets the belief-weight clock.
+# ---------------------------------------------------------------------------
+
+def test_12_move_during_fade_in_restarts_belief_weight_clock():
+    """Per spec section 11 / 7: at sim_t=15 (half cooldown=30) the
+    belief weight is 0.5 * amplitude. Move the relic, and at sim_t=20
+    the weight is (20-15)/30 * amplitude = (1/6) * amplitude - NOT
+    (20-0)/30 = 2/3 * amplitude. The fade-in restarts."""
+    cfg = _make_relic_cfg()
+    mgr = RelicManager(cfg, n_factions=2)
+    w = _make_world(width=64, height=48)
+    mgr.place(0, 0, tx=10, ty=8, world=w, sim_t=0.0)
+
+    bf = _make_belief_field(w, relic_cfg=cfg)
+
+    # t=15: half cooldown, weight = 0.5 * amplitude.
+    bf.recompute(citizens=[], relics=mgr.relics, sim_t=15.0)
+    tpcx, tpcy = bf.tiles_per_cell_x, bf.tiles_per_cell_y
+    cx, cy = 10 // tpcx, 8 // tpcy
+    assert bf.field[0, cy, cx] == pytest.approx(cfg.amplitude * 0.5)
+
+    # Move at t=15. tx/ty change, placed_at resets to 15.0.
+    ok, _ = mgr.move(0, 0, tx=12, ty=10, world=w, sim_t=15.0)
+    assert ok
+
+    # t=20: 5 sec into the new placement, weight = 5/30 * amplitude.
+    bf.recompute(citizens=[], relics=mgr.relics, sim_t=20.0)
+    new_cx, new_cy = 12 // tpcx, 10 // tpcy
+    expected = cfg.amplitude * (5.0 / cfg.place_cooldown)
+    assert bf.field[0, new_cy, new_cx] == pytest.approx(expected)
+    # Old tile is empty.
+    assert bf.field[0, cy, cx] == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# Smoke tests
+# ---------------------------------------------------------------------------
+
+def test_shattered_relic_does_not_double_shatter_next_tick():
+    """Once SHATTERED, the relic stops being considered by tick().
+    Subsequent ticks return [] - no duplicate ShatterSummary."""
+    cfg = _make_relic_cfg()
+    mgr = RelicManager(cfg, n_factions=2)
+    w = _make_world(width=64, height=48)
+    mgr.place(0, 0, tx=20, ty=15, world=w, sim_t=0.0)
+
+    bf = _FakeBelief(n_factions=2, query_map={
+        (20, 15, 0): 1.0,
+        (20, 15, 1): 10.0,
+    })
+    citizens = _fake_citizens(relic_tx=20, relic_ty=15)
+
+    # Force shatter.
+    sim_t = 0.0
+    fired = []
+    for _ in range(60):
+        sim_t += 0.2
+        out = mgr.tick(0.2, bf, citizens, sim_t=sim_t)
+        fired.extend(out)
+    assert len(fired) == 1   # exactly one shatter, ever
+
+    # 20 more ticks: still no new shatter even though belief pressure
+    # is still set on the (now SHATTERED) tile.
+    for _ in range(20):
+        sim_t += 0.2
+        out = mgr.tick(0.2, bf, citizens, sim_t=sim_t)
+        assert out == []
+
+
+def test_tick_with_none_belief_preserves_stub_contract():
+    """The step-1 stub-test expects tick(None, None, sim_t) to advance
+    `_placed_time_accum` without crashing. That contract must continue
+    to hold after the shatter wiring lands - other tests (and any
+    P3-PR1 powers tests that don't have a belief field handy) rely
+    on it."""
+    cfg = _make_relic_cfg()
+    mgr = RelicManager(cfg, n_factions=2)
+    w = _make_world(width=64, height=48)
+    mgr.place(0, 0, tx=10, ty=8, world=w, sim_t=0.0)
+    for _ in range(50):
+        out = mgr.tick(0.2, belief=None, citizens=None, sim_t=0.0)
+        assert out == []
+    assert mgr.get(0, 0)._placed_time_accum == pytest.approx(10.0)
+    assert mgr.get(0, 0).state == RelicState.PLACED
+
+
+def test_balanced_pressure_does_not_shatter():
+    """Rival belief exactly at the shatter_ratio threshold should NOT
+    trigger - the rule is strict greater-than. Edge case."""
+    cfg = _make_relic_cfg()   # shatter_ratio=1.5
+    mgr = RelicManager(cfg, n_factions=2)
+    w = _make_world(width=64, height=48)
+    mgr.place(0, 0, tx=20, ty=15, world=w, sim_t=0.0)
+
+    # Rival at exactly 1.5x player.
+    bf = _FakeBelief(n_factions=2, query_map={
+        (20, 15, 0): 2.0,
+        (20, 15, 1): 3.0,
+    })
+    citizens = _fake_citizens(relic_tx=20, relic_ty=15)
+
+    sim_t = 0.0
+    for _ in range(60):   # 12 sim_sec, well past shatter_time
+        sim_t += 0.2
+        out = mgr.tick(0.2, bf, citizens, sim_t=sim_t)
+        assert out == []
+    assert mgr.get(0, 0).state == RelicState.PLACED
+
+
+def test_shatter_summary_counts_only_within_radius_8():
+    """Citizens beyond radius 8 of the relic are not counted in the
+    summary. Citizens AT the radius edge are counted (<= 8.0)."""
+    cfg = _make_relic_cfg()
+    mgr = RelicManager(cfg, n_factions=2)
+    w = _make_world(width=64, height=48)
+    mgr.place(0, 0, tx=20, ty=15, world=w, sim_t=0.0)
+
+    bf = _FakeBelief(n_factions=2, query_map={
+        (20, 15, 0): 1.0,
+        (20, 15, 1): 10.0,
+    })
+
+    # Mix of in-radius and out-of-radius citizens.
+    cits = [
+        types.SimpleNamespace(x=20.0, y=15.0,  faction=0),  # on relic, IN
+        types.SimpleNamespace(x=23.0, y=18.0,  faction=0),  # ~4.24 dist, IN
+        types.SimpleNamespace(x=28.0, y=23.0,  faction=0),  # ~11.3 dist, OUT
+        types.SimpleNamespace(x=20.0, y=23.0,  faction=1),  # 8.0 dist, IN
+        types.SimpleNamespace(x=20.0, y=25.0,  faction=1),  # 10.0 dist, OUT
+        types.SimpleNamespace(x=50.0, y=40.0,  faction=1),  # far, OUT
+    ]
+    citizens = types.SimpleNamespace(citizens=cits)
+
+    sim_t = 0.0
+    summary = None
+    for _ in range(60):
+        sim_t += 0.2
+        out = mgr.tick(0.2, bf, citizens, sim_t=sim_t)
+        if out:
+            summary = out[0]
+            break
+
+    assert summary is not None
+    assert summary.player_citizens_within_8 == 2  # two faction-0 inside
+    assert summary.rival_citizens_within_8 == 1   # one faction-1 inside
+
+
+def test_shatter_persists_position_and_summary_post_shatter():
+    """After SHATTERED, tx/ty/shatter_at/shatter_summary are all kept
+    so PR3 step 7's crack animation and the summary panel can read
+    them. State stays SHATTERED forever (no resurrection)."""
+    cfg = _make_relic_cfg()
+    mgr = RelicManager(cfg, n_factions=2)
+    w = _make_world(width=64, height=48)
+    mgr.place(0, 0, tx=20, ty=15, world=w, sim_t=0.0)
+
+    bf = _FakeBelief(n_factions=2, query_map={
+        (20, 15, 0): 1.0,
+        (20, 15, 1): 10.0,
+    })
+    citizens = _fake_citizens(relic_tx=20, relic_ty=15)
+
+    sim_t = 0.0
+    for _ in range(60):
+        sim_t += 0.2
+        if mgr.tick(0.2, bf, citizens, sim_t=sim_t):
+            break
+
+    r = mgr.get(0, 0)
+    assert r.state == RelicState.SHATTERED
+    assert (r.tx, r.ty) == (20, 15)        # position retained
+    assert r.shatter_at > 0.0              # populated
+    assert r.shatter_summary is not None
+    # No mutation method can resurrect a SHATTERED relic - already
+    # covered by test_shattered_relic_rejects_all_mutations, but
+    # sanity-check one more time post-real-shatter.
+    ok, why = mgr.place(0, 0, 5, 5, w, sim_t=999.0)
+    assert not ok
+    assert "shattered" in why

@@ -122,6 +122,40 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(f"  +{placed} rival-faction citizens (--rival-stub-seed)")
 
+    # PR3 step 1 (2026-05-22): real RelicManager replaces the pre-PR3
+    # SimpleNamespace list. We seed with the same six placements so the
+    # on-screen preview is unchanged. The state machine is live: any
+    # PLACED relic on the map already participates in `placed_for_faction`.
+    # Belief contribution / attractors / shatter rule arrive in PR3
+    # steps 2-4.
+    relic_mgr = RelicManager(cfg.powers.relic, n_factions=2)
+    cx_, cy_ = world.width // 2, world.height // 2
+    _seed_placements: tuple[tuple[int, int, int, int], ...] = (
+        # (faction, slot, dx, dy)
+        (0, 0, -4, -1),   # Open Eye  - NW (walkable for seed=0; (-3,-2) lands on a hill)
+        (0, 1,  3,  0),   # Open Eye  - E (in the cluster)
+        (0, 2, -8, -6),   # Open Eye  - far NW (alone)
+        (1, 0,  0,  4),   # Maw       - rival S
+        (1, 1,  5,  3),   # Maw       - rival SE
+        (1, 2,  1,  5),   # Maw       - rival cluster
+    )
+    for _f, _s, _dx, _dy in _seed_placements:
+        _ok, _why = relic_mgr.place(_f, _s, cx_ + _dx, cy_ + _dy,
+                                      world, sim_t=0.0)
+        if not _ok:
+            # Don't crash - just log and move on. A seed tile may land
+            # on water for an unusual world seed; the preview can
+            # cope with fewer than six relics on screen.
+            print(f"  relic seed skipped (f{_f} s{_s}): {_why}")
+    # PR3 step 3: push the now-PLACED relics into the citizen
+    # manager so wander picks can be drawn toward them. Each
+    # future R-key placement / move / retrieve (PR3 step 10) and
+    # shatter (PR3 step 4) will re-sync; for now the static seed
+    # state is enough.
+    citizen_mgr.sync_attractors_from_relics(
+        relic_mgr.relics, cfg.powers.relic.attract_radius,
+    )
+
     print(f"Allocating belief field ({cfg.belief.grid_w}x{cfg.belief.grid_h})...")
     belief = BeliefField(cfg.belief, world,
                           dying_duration=cfg.citizen.dying_duration,
@@ -179,39 +213,6 @@ def main(argv: list[str] | None = None) -> int:
     show_food_overlay = False
     show_relics = True   # toggle with `K` - render-only hide for screenshots / eyeballing.
 
-    # PR3 step 1 (2026-05-22): real RelicManager replaces the pre-PR3
-    # SimpleNamespace list. We seed with the same six placements so the
-    # on-screen preview is unchanged. The state machine is live: any
-    # PLACED relic on the map already participates in `placed_for_faction`.
-    # Belief contribution / attractors / shatter rule arrive in PR3
-    # steps 2-4.
-    relic_mgr = RelicManager(cfg.powers.relic, n_factions=2)
-    cx_, cy_ = world.width // 2, world.height // 2
-    _seed_placements: tuple[tuple[int, int, int, int], ...] = (
-        # (faction, slot, dx, dy)
-        (0, 0, -4, -1),   # Open Eye  - NW (walkable for seed=0; (-3,-2) lands on a hill)
-        (0, 1,  3,  0),   # Open Eye  - E (in the cluster)
-        (0, 2, -8, -6),   # Open Eye  - far NW (alone)
-        (1, 0,  0,  4),   # Maw       - rival S
-        (1, 1,  5,  3),   # Maw       - rival SE
-        (1, 2,  1,  5),   # Maw       - rival cluster
-    )
-    for _f, _s, _dx, _dy in _seed_placements:
-        _ok, _why = relic_mgr.place(_f, _s, cx_ + _dx, cy_ + _dy,
-                                      world, sim_t=0.0)
-        if not _ok:
-            # Don't crash - just log and move on. A seed tile may land
-            # on water for an unusual world seed; the preview can
-            # cope with fewer than six relics on screen.
-            print(f"  relic seed skipped (f{_f} s{_s}): {_why}")
-    # PR3 step 3: push the now-PLACED relics into the citizen
-    # manager so wander picks can be drawn toward them. Each
-    # future R-key placement / move / retrieve (PR3 step 10) and
-    # shatter (PR3 step 4) will re-sync; for now the static seed
-    # state is enough.
-    citizen_mgr.sync_attractors_from_relics(
-        relic_mgr.relics, cfg.powers.relic.attract_radius,
-    )
     active_mode: Optional[PowerKind] = None
     # Brush size for bulk Raise/Lower (side length, so tile count = brush_size**2).
     # 1..4 -> 1, 4, 9, 16 tiles. Persists across mode switches; only effective
@@ -365,6 +366,32 @@ def main(argv: list[str] | None = None) -> int:
                 relics=relic_mgr.relics,
                 sim_t=sim_time,
             )
+            # PR3 step 4: drive threat_timer from rival belief,
+            # transition PLACED -> SHATTERED when the threshold
+            # sustains for shatter_time. Runs AFTER belief.recompute
+            # so query() sees the just-computed field.
+            _shattered = relic_mgr.tick(
+                tick_dt, belief, citizen_mgr, sim_t=sim_time,
+            )
+            if _shattered:
+                # Re-sync attractors so SHATTERED relics stop pulling.
+                # Scripture / panel / animation hooks land in later
+                # PR3 steps; for now we just log to stdout so the
+                # event is visible during dev playtests.
+                citizen_mgr.sync_attractors_from_relics(
+                    relic_mgr.relics, cfg.powers.relic.attract_radius,
+                )
+                for _s in _shattered:
+                    print(
+                        f"  [shatter @ sim_t={sim_time:.1f}] "
+                        f"f{_s.faction} {_s.name} at "
+                        f"({_s.tx},{_s.ty}) | belief p={_s.local_belief_player:.2f} "
+                        f"r={_s.local_belief_rival:.2f} | "
+                        f"citizens p={_s.player_citizens_within_8} "
+                        f"r={_s.rival_citizens_within_8} | "
+                        f"placed_total={_s.time_placed_total:.1f}s "
+                        f"moves={_s.times_moved}"
+                    )
             sim_accumulator -= tick_dt
             sim_time += tick_dt
 

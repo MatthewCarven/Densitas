@@ -20,6 +20,7 @@ the life of a `Relic` object - they're set at construction.
 from __future__ import annotations
 
 import enum
+import math
 from dataclasses import dataclass, field
 from typing import Optional, TYPE_CHECKING
 
@@ -297,22 +298,108 @@ class RelicManager:
 
     # -- Per-tick (stubs until PR3 step 4) --------------------------------
 
-    def tick(self, dt: float, belief: "BeliefField",
-             citizens: "CitizenManager",
+    def tick(self, dt: float, belief: Optional["BeliefField"],
+             citizens: Optional["CitizenManager"],
              sim_t: float) -> list[ShatterSummary]:
-        """No-op stub. Real impl in PR3 step 4 - will drive
-        `threat_timer` from rival/player belief at each PLACED relic's
-        tile, fire the shatter transition when the threshold is held
-        for `shatter_time`, and emit one `ShatterSummary` per shatter.
+        """Advance time for each PLACED relic. Returns any
+        ShatterSummary instances produced this tick.
 
-        For now: still updates `_placed_time_accum` for any PLACED
-        relic so the final summary's `time_placed_total` is honest
-        the moment PR3 step 4 starts populating it.
+        Per `Densitas_relics.md` section 9:
+          - If rival belief at this relic's tile exceeds
+            `shatter_ratio * max(player_belief, 1e-3)`, the
+            relic's `threat_timer` accumulates `dt`.
+          - Otherwise `threat_timer` decays at 2x dt (a 1-sec
+            rival incursion erases ~2 sec of threat - sustained
+            pressure is required to shatter).
+          - When `threat_timer` reaches `shatter_time` (8 sec
+            default), the relic transitions PLACED -> SHATTERED
+            and `_build_shatter_summary` snapshots the
+            tile / belief / citizen-count state for the panel.
+
+        Defensive: `belief=None` or `citizens=None` skip the
+        shatter math but still advance `_placed_time_accum`. This
+        preserves the step-1 stub-test contract
+        (test_tick_accumulates_placed_time_for_placed_relics).
         """
+        shattered: list[ShatterSummary] = []
+        skip_shatter = (belief is None) or (citizens is None)
         for r in self.relics:
-            if r.state == RelicState.PLACED:
-                r._placed_time_accum += dt
-        return []
+            if r.state != RelicState.PLACED:
+                continue
+            r._placed_time_accum += dt
+            if skip_shatter:
+                continue
+
+            p_b = belief.query(r.tx, r.ty, faction=r.faction)
+            rival_bs = [
+                belief.query(r.tx, r.ty, f)
+                for f in range(belief.n_factions)
+                if f != r.faction
+            ]
+            r_b = max(rival_bs) if rival_bs else 0.0
+
+            if r_b > self.cfg.shatter_ratio * max(p_b, 1e-3):
+                r.threat_timer += dt
+            else:
+                r.threat_timer = max(0.0, r.threat_timer - 2.0 * dt)
+
+            if r.threat_timer >= self.cfg.shatter_time:
+                summary = self._build_shatter_summary(
+                    r, p_b, r_b, citizens, sim_t,
+                )
+                r.state = RelicState.SHATTERED
+                r.shatter_at = sim_t
+                r.shatter_summary = summary
+                # Position kept so the on-map crack/flash (PR3 step 7)
+                # can render at the shatter site.
+                shattered.append(summary)
+        return shattered
+
+    def _build_shatter_summary(self, r: Relic,
+                                 p_b: float, r_b: float,
+                                 citizens: "CitizenManager",
+                                 sim_t: float) -> ShatterSummary:
+        """Snapshot the eight fields the shatter panel reads from.
+
+        Citizen counts use Euclidean distance within radius 8 from
+        the relic's tile, consistent with the attractor disc shape
+        (spec section 8). DYING citizens are still counted - they
+        were near the relic at the moment of shatter, which is
+        what the panel reports.
+
+        `citizens` is duck-typed - we only need an iterable of
+        objects with `.x`, `.y`, `.faction`. CitizenManager exposes
+        `.citizens` as that list; future N-faction work can pass
+        any compatible iterable.
+        """
+        radius = 8.0
+        radius_sq = radius * radius
+        p_count = 0
+        r_count = 0
+        cx, cy = float(r.tx), float(r.ty)
+        for c in citizens.citizens:
+            dx = c.x - cx
+            dy = c.y - cy
+            if dx * dx + dy * dy > radius_sq:
+                continue
+            if c.faction == r.faction:
+                p_count += 1
+            else:
+                r_count += 1
+        return ShatterSummary(
+            relic_id=r.id,
+            faction=r.faction,
+            name=r.name,
+            tx=r.tx,
+            ty=r.ty,
+            sim_t=sim_t,
+            local_belief_player=float(p_b),
+            local_belief_rival=float(r_b),
+            player_citizens_within_8=p_count,
+            rival_citizens_within_8=r_count,
+            time_placed_total=r._placed_time_accum,
+            times_moved=r.times_moved,
+        )
 
     def shatter_at(self, tx: int, ty: int, radius: int,
                    sim_t: float) -> list[ShatterSummary]:
