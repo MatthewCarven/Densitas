@@ -128,15 +128,27 @@ class CitizenManager:
     """
 
     def __init__(self, cfg: CitizenConfig, world: World, world_seed: int,
-                 food_cfg: Optional[FoodConfig] = None):
+                 food_cfg: Optional[FoodConfig] = None,
+                 relic_cfg: Optional["RelicConfig"] = None):
         self.cfg = cfg
         self.food_cfg = food_cfg
+        # PR3 step 3: optional RelicConfig. When supplied, callers can
+        # push PLACED relics in via sync_attractors_from_relics() and
+        # wander picks will pull toward them with probability
+        # relic_cfg.attract_probability. None is fine for tests and any
+        # caller that doesn't exercise relic attraction.
+        self.relic_cfg = relic_cfg
         self._rng = np.random.default_rng(world_seed ^ cfg.spawn_seed)
         self._next_id: int = 0
         self.citizens: list[Citizen] = []
         self._spawn_initial(world)
         # Sim clock — written by tick() and read by inspire_bias logic.
         self._sim_t: float = 0.0
+        # PR3 step 3: list of (tx, ty, radius, faction) tuples - updated
+        # whenever the relic state changes via sync_attractors_from_relics().
+        # Stored as a list of tuples (not Relic objects) so we don't have
+        # to think about object lifetime during wander picks.
+        self.attractors: list[tuple[int, int, int, int]] = []
 
     # -- public API ---------------------------------------------------------
 
@@ -541,14 +553,47 @@ class CitizenManager:
         )
 
     def _pick_wander_target(self, c: Citizen, world: World) -> tuple[float, float]:
-        # P3 PR1: respect Inspire bias. If the citizen has been inspired and the
-        # bias hasn't timed out, keep the existing target.
+        """Pick the next wander target.
+
+        Precedence (highest to lowest):
+          1. Active Inspire bias - keep the existing target (P3 PR1).
+          2. PR3 step 3 attractors. Same-faction PLACED relics pull a
+             roaming citizen with probability
+             `relic_cfg.attract_probability` (0.4 default), targeting
+             a uniform point in a disc of radius `attract_radius` (8
+             default) around the relic tile. FORAGE citizens skip
+             attractors entirely - hunger trumps devotion (spec
+             section 8, test #11).
+          3. Random wander disc around `c.home_x, c.home_y`.
+        """
         if c.inspire_bias_until > self._sim_t:
             return c.target_x, c.target_y
         if c.inspire_bias_until > 0.0 and c.inspire_bias_until <= self._sim_t:
             # Bias expired — clear and continue with normal wander.
             c.inspire_bias_until = -1.0
 
+        # PR3 step 3 attractors. FORAGE citizens override - they've
+        # already decided food matters more than relics.
+        if self.attractors and c.state != CitizenState.FORAGE \
+                and self.relic_cfg is not None:
+            mine = [a for a in self.attractors if a[3] == c.faction]
+            if mine and self._rng.random() < self.relic_cfg.attract_probability:
+                idx = int(self._rng.integers(0, len(mine)))
+                tx_i, ty_i, R, _ = mine[idx]
+                target = self._random_in_disc(tx_i, ty_i, R, world)
+                if target is not None:
+                    return target
+                # Fall through if no walkable tile in the disc.
+
+        return self._random_wander_target(c, world)
+
+    def _random_wander_target(self, c: Citizen,
+                                world: World) -> tuple[float, float]:
+        """P1 wander behaviour, extracted as a helper for PR3 step 3.
+        Uniform random in a square of side `2 * wander_radius` around
+        the citizen's home. Falls back to home if no walkable tile
+        is found in 8 attempts.
+        """
         r = self.cfg.wander_radius
         for _ in range(8):
             dx = float(self._rng.integers(-r, r + 1))
@@ -559,6 +604,54 @@ class CitizenManager:
             if 0 <= ix < world.width and 0 <= iy < world.height and _walkable(world, ix, iy):
                 return tx, ty
         return c.home_x, c.home_y
+
+    def _random_in_disc(self, cx: int, cy: int, R: int,
+                          world: World) -> Optional[tuple[float, float]]:
+        """Uniform sample within a disc of radius R centred at (cx, cy).
+
+        Polar form: r = R * sqrt(u1), theta = 2 * pi * u2 produces a
+        uniform-area distribution without rejection. We then try up
+        to 8 picks to find a walkable tile inside world bounds;
+        returns None if all 8 are rejected so the caller can fall
+        back to random_wander.
+        """
+        for _ in range(8):
+            u1 = float(self._rng.random())
+            u2 = float(self._rng.random())
+            radius = R * math.sqrt(u1)
+            theta = 2.0 * math.pi * u2
+            tx = cx + radius * math.cos(theta)
+            ty = cy + radius * math.sin(theta)
+            ix, iy = int(tx), int(ty)
+            if 0 <= ix < world.width and 0 <= iy < world.height \
+                    and _walkable(world, ix, iy):
+                return tx, ty
+        return None
+
+    def sync_attractors_from_relics(self, relics: list,
+                                    attract_radius: int) -> None:
+        """Rebuild `self.attractors` from a list of Relics.
+
+        Per spec section 8: keep only PLACED relics, store as
+        `(tx, ty, attract_radius, faction)` tuples. Called by
+        main.py after every relic mutation. For PR3 step 3 the
+        only caller is the startup seed loop; step 10 will add
+        re-syncs after R-key placement / move / retrieve, and
+        step 4's shatter rule will trigger one too.
+
+        Relics are duck-typed: we read `.state`, `.tx`, `.ty`,
+        `.faction`. We compare state against the int value of
+        RelicState.PLACED (1) to avoid an import that would loop
+        citizen -> relics -> belief -> citizen. The integer
+        comparison is robust as long as the enum values in
+        densitas/relics.py stay stable - they're part of the
+        save format, so they will.
+        """
+        PLACED = 1
+        self.attractors = [
+            (int(r.tx), int(r.ty), int(attract_radius), int(r.faction))
+            for r in relics if int(r.state) == PLACED
+        ]
 
     def _step_toward(self, c: Citizen, tx: float, ty: float, dt: float, world: World) -> None:
         speed = self.cfg.wander_speed * dt

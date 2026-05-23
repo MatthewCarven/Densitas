@@ -574,3 +574,320 @@ def test_recompute_without_relic_cfg_skips_scatter():
     bf.recompute(citizens=[], relics=mgr.relics, sim_t=30.0)
     # No crash. Field stays zero because the scatter was skipped.
     assert bf.field.sum() == pytest.approx(0.0)
+
+# ===========================================================================
+# PR3 step 3: citizen attractors via CitizenManager.sync_attractors_from_relics
+# + _pick_wander_target attractor branch. Tests #9 and #11 from spec section
+# 11 plus smoke.
+# ===========================================================================
+
+import math
+
+from densitas.config import CitizenConfig, FoodConfig, FoodBiomeConfig
+from densitas.citizen import (
+    CitizenManager, CitizenState, Citizen, Facing,
+)
+
+
+def _make_citizen_cfg_for_attractors(**overrides) -> CitizenConfig:
+    """CitizenConfig sized for attractor tests. wander_radius=5 keeps the
+    random-wander region tightly around home so we can place a relic far
+    from home and isolate the attractor contribution to the hit count."""
+    defaults = dict(
+        initial_population=1, spawn_radius_tiles=2, spawn_seed=0,
+        maturity_age=8.0, lifespan_mean=180.0, lifespan_jitter=40.0,
+        repro_radius=2, repro_cooldown=5.0,
+        mate_duration=0.5, dying_duration=2.0,
+        wander_period=2.0, wander_radius=5, wander_speed=1.0,
+        tick_hz=5,
+    )
+    defaults.update(overrides)
+    return CitizenConfig(**defaults)
+
+
+def _make_food_cfg_minimal() -> FoodConfig:
+    """A FoodConfig that exists but does nothing interesting - we only
+    pass it so the CitizenManager doesn't take its P1-backward-compat
+    path that disables hunger / forage."""
+    biome = FoodBiomeConfig(
+        forest_initial=1.0, forest_regen=0.01,
+        grass_initial=1.0,  grass_regen=0.01,
+        beach_initial=1.0,  beach_regen=0.01,
+        hill_initial=1.0,   hill_regen=0.01,
+        holy_initial=1.0,   holy_regen=0.01,
+    )
+    return FoodConfig(
+        hunger_rate=0.005, forage_threshold=0.4,
+        repro_hunger_threshold=0.3, starve_hunger=1.0,
+        eat_amount=0.2, eat_duration=1.0,
+        bite_size=0.2, calorie_per_food=1.0, satiation_cap=0.5,
+        forage_radius_tiles=8, min_forage_food=0.5,
+        overlay_alpha_max=160, biome=biome,
+    )
+
+
+def _make_lone_citizen_mgr(world: World, relic_cfg: RelicConfig,
+                            home: tuple[int, int] = (20, 20)
+                            ) -> CitizenManager:
+    """Build a CitizenManager with exactly one citizen at the given
+    home tile. We override the initial spawn (random) by overwriting
+    the citizens list after construction.
+    """
+    cm = CitizenManager(
+        _make_citizen_cfg_for_attractors(),
+        world,
+        world_seed=1,
+        food_cfg=_make_food_cfg_minimal(),
+        relic_cfg=relic_cfg,
+    )
+    # Replace the auto-spawned citizens with one we control. Use
+    # only the required fields plus inspire_bias_until (so the
+    # P3 PR1 branch doesn't pick up stale bias).
+    cm.citizens = [Citizen(
+        id=0, faction=0,
+        x=float(home[0]), y=float(home[1]),
+        state=CitizenState.IDLE,
+        age=10.0, lifespan=200.0, repro_cd=0.0,
+        facing=Facing.SOUTH,
+        home_x=float(home[0]), home_y=float(home[1]),
+        target_x=float(home[0]), target_y=float(home[1]),
+        inspire_bias_until=-1.0,
+    )]
+    return cm
+
+
+# ---------------------------------------------------------------------------
+# Spec test #9: ~40% of wander picks land in the relic disc.
+# ---------------------------------------------------------------------------
+
+def test_09_attractor_pulls_about_forty_percent_of_wander_picks():
+    """With a single PLACED relic far from the citizen's wander region,
+    the fraction of `_pick_wander_target` results that land within the
+    relic's `attract_radius` should be approximately the configured
+    attract_probability (0.4). Tolerance +/-5% per the spec.
+
+    The relic is placed 30 tiles away from home with wander_radius=5,
+    so random-wander picks never accidentally land in the relic disc.
+    Any hit-in-disc is therefore an attractor pull.
+    """
+    cfg = _make_relic_cfg()  # attract_radius=8, attract_probability=0.4
+    w = _make_world(width=80, height=60)
+
+    mgr = RelicManager(cfg, n_factions=2)
+    relic_tx, relic_ty = 50, 30
+    mgr.place(0, 0, tx=relic_tx, ty=relic_ty, world=w, sim_t=0.0)
+
+    cm = _make_lone_citizen_mgr(w, relic_cfg=cfg, home=(20, 20))
+    cm.sync_attractors_from_relics(mgr.relics, cfg.attract_radius)
+    assert len(cm.attractors) == 1
+
+    c = cm.citizens[0]
+    n = 1000
+    hits = 0
+    for _ in range(n):
+        tx, ty = cm._pick_wander_target(c, w)
+        # True (Euclidean) disc per spec - polar sampling implies it.
+        if math.hypot(tx - relic_tx, ty - relic_ty) <= cfg.attract_radius:
+            hits += 1
+
+    ratio = hits / n
+    # Spec tolerance: +/-5%. attract_probability=0.4 -> expect 0.35..0.45.
+    assert 0.35 <= ratio <= 0.45, (
+        f"attractor hit ratio {ratio:.3f} outside expected 0.35..0.45"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Spec test #11: FORAGE citizens ignore attractors (hunger trumps devotion).
+# ---------------------------------------------------------------------------
+
+def test_11_forage_state_ignores_attractors():
+    """A citizen in the FORAGE state must skip the attractor branch.
+    Hits in the relic disc should be near zero (only via wander-region
+    overlap, which we engineer to be empty)."""
+    cfg = _make_relic_cfg()
+    w = _make_world(width=80, height=60)
+
+    mgr = RelicManager(cfg, n_factions=2)
+    relic_tx, relic_ty = 50, 30
+    mgr.place(0, 0, tx=relic_tx, ty=relic_ty, world=w, sim_t=0.0)
+
+    cm = _make_lone_citizen_mgr(w, relic_cfg=cfg, home=(20, 20))
+    cm.sync_attractors_from_relics(mgr.relics, cfg.attract_radius)
+
+    c = cm.citizens[0]
+    c.state = CitizenState.FORAGE   # hunger trumps devotion
+
+    n = 1000
+    hits = 0
+    for _ in range(n):
+        tx, ty = cm._pick_wander_target(c, w)
+        if math.hypot(tx - relic_tx, ty - relic_ty) <= cfg.attract_radius:
+            hits += 1
+
+    # With home 30 tiles from relic and wander_radius=5, random wander
+    # picks should NEVER land within 8 of the relic. Allow at most 1
+    # hit for any RNG weirdness on the edge of the search loop.
+    assert hits <= 1, (
+        f"FORAGE citizen pulled toward attractor: {hits}/1000 hits"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Smoke tests
+# ---------------------------------------------------------------------------
+
+def test_no_attractors_falls_back_to_random_wander():
+    """Empty `attractors` list -> behaves exactly like P1 random wander."""
+    cfg = _make_relic_cfg()
+    w = _make_world(width=80, height=60)
+    cm = _make_lone_citizen_mgr(w, relic_cfg=cfg, home=(40, 30))
+    assert cm.attractors == []  # untouched by sync (no PLACED relics)
+
+    c = cm.citizens[0]
+    n = 200
+    for _ in range(n):
+        tx, ty = cm._pick_wander_target(c, w)
+        # Every pick stays within wander_radius (5) of home Chebyshev.
+        assert abs(tx - c.home_x) <= cm.cfg.wander_radius
+        assert abs(ty - c.home_y) <= cm.cfg.wander_radius
+
+
+def test_other_faction_relic_does_not_attract():
+    """A faction-1 relic must not pull a faction-0 citizen."""
+    cfg = _make_relic_cfg()
+    w = _make_world(width=80, height=60)
+
+    mgr = RelicManager(cfg, n_factions=2)
+    relic_tx, relic_ty = 50, 30
+    # faction 1 PLACED relic.
+    mgr.place(1, 0, tx=relic_tx, ty=relic_ty, world=w, sim_t=0.0)
+
+    cm = _make_lone_citizen_mgr(w, relic_cfg=cfg, home=(20, 20))
+    cm.sync_attractors_from_relics(mgr.relics, cfg.attract_radius)
+    assert len(cm.attractors) == 1   # synced, but for the wrong faction
+
+    c = cm.citizens[0]  # faction 0
+    n = 500
+    hits = 0
+    for _ in range(n):
+        tx, ty = cm._pick_wander_target(c, w)
+        if math.hypot(tx - relic_tx, ty - relic_ty) <= cfg.attract_radius:
+            hits += 1
+    # Same engineering as test #11: far home + small wander_radius => 0.
+    assert hits <= 1, (
+        f"other-faction relic pulled citizen: {hits}/500 hits"
+    )
+
+
+def test_sync_filters_to_placed_only():
+    """AVAILABLE and SHATTERED relics must not appear in attractors."""
+    cfg = _make_relic_cfg()
+    w = _make_world(width=80, height=60)
+
+    mgr = RelicManager(cfg, n_factions=2)
+    # 3 relics: one PLACED, one AVAILABLE, one we'll SHATTER.
+    mgr.place(0, 0, tx=10, ty=10, world=w, sim_t=0.0)
+    # slot 1 stays AVAILABLE
+    mgr.place(0, 2, tx=50, ty=30, world=w, sim_t=0.0)
+    mgr.get(0, 2).state = RelicState.SHATTERED
+
+    cm = _make_lone_citizen_mgr(w, relic_cfg=cfg, home=(20, 20))
+    cm.sync_attractors_from_relics(mgr.relics, cfg.attract_radius)
+    assert len(cm.attractors) == 1
+    assert cm.attractors[0][:2] == (10, 10)  # only the PLACED one
+
+
+def test_sync_idempotent_with_re_call():
+    """Re-syncing after a state change reflects the new state."""
+    cfg = _make_relic_cfg()
+    w = _make_world(width=80, height=60)
+    mgr = RelicManager(cfg, n_factions=2)
+    mgr.place(0, 0, tx=10, ty=10, world=w, sim_t=0.0)
+
+    cm = _make_lone_citizen_mgr(w, relic_cfg=cfg, home=(20, 20))
+    cm.sync_attractors_from_relics(mgr.relics, cfg.attract_radius)
+    assert len(cm.attractors) == 1
+
+    # Retrieve and re-sync - should drop to zero attractors.
+    mgr.retrieve(0, 0, sim_t=5.0)
+    cm.sync_attractors_from_relics(mgr.relics, cfg.attract_radius)
+    assert cm.attractors == []
+
+
+def test_no_relic_cfg_disables_attractors_even_with_synced_list():
+    """If CitizenManager was built without relic_cfg, attractors are
+    ignored in _pick_wander_target even after sync populates the list.
+    Defensive: no AttributeError when relic_cfg is None."""
+    cfg = _make_relic_cfg()
+    w = _make_world(width=80, height=60)
+
+    mgr = RelicManager(cfg, n_factions=2)
+    mgr.place(0, 0, tx=50, ty=30, world=w, sim_t=0.0)
+
+    cm = CitizenManager(
+        _make_citizen_cfg_for_attractors(), w, world_seed=1,
+        food_cfg=_make_food_cfg_minimal(),
+        relic_cfg=None,                          # the key bit
+    )
+    cm.citizens = [Citizen(
+        id=0, faction=0, x=20.0, y=20.0,
+        state=CitizenState.IDLE,
+        age=10.0, lifespan=200.0, repro_cd=0.0,
+        facing=Facing.SOUTH,
+        home_x=20.0, home_y=20.0,
+        target_x=20.0, target_y=20.0,
+        inspire_bias_until=-1.0,
+    )]
+    cm.sync_attractors_from_relics(mgr.relics, cfg.attract_radius)
+    assert len(cm.attractors) == 1  # sync still populates the list
+
+    c = cm.citizens[0]
+    n = 200
+    hits = 0
+    for _ in range(n):
+        tx, ty = cm._pick_wander_target(c, w)
+        if math.hypot(tx - 50, ty - 30) <= cfg.attract_radius:
+            hits += 1
+    # With relic_cfg=None the attractor branch is skipped entirely.
+    assert hits <= 1, (
+        f"None relic_cfg should disable attractor branch; got {hits}/200"
+    )
+
+
+def test_attractors_pick_uniformly_with_multiple_relics():
+    """Two relics, both close enough to the citizen's home that the
+    random-wander region can hit neither - each should get roughly half
+    the attractor pulls."""
+    cfg = _make_relic_cfg()
+    w = _make_world(width=120, height=80)
+
+    mgr = RelicManager(cfg, n_factions=2)
+    # Two relics 40 tiles either side of home.
+    mgr.place(0, 0, tx=20, ty=40, world=w, sim_t=0.0)
+    mgr.place(0, 1, tx=100, ty=40, world=w, sim_t=0.0)
+
+    cm = _make_lone_citizen_mgr(w, relic_cfg=cfg, home=(60, 40))
+    cm.sync_attractors_from_relics(mgr.relics, cfg.attract_radius)
+
+    c = cm.citizens[0]
+    n = 2000
+    hits_a = hits_b = 0
+    for _ in range(n):
+        tx, ty = cm._pick_wander_target(c, w)
+        if math.hypot(tx - 20, ty - 40) <= cfg.attract_radius:
+            hits_a += 1
+        elif math.hypot(tx - 100, ty - 40) <= cfg.attract_radius:
+            hits_b += 1
+    total_hits = hits_a + hits_b
+    # Expect each to be ~0.2 of all picks (0.4 attractor prob / 2 relics).
+    # Allow a wide tolerance since the test runs few samples.
+    assert total_hits >= int(n * 0.30), (
+        f"total attractor hits {total_hits} suspiciously low"
+    )
+    # And the two should be within ~30% of each other.
+    if hits_a > 0 and hits_b > 0:
+        ratio = min(hits_a, hits_b) / max(hits_a, hits_b)
+        assert ratio >= 0.65, (
+            f"attractor split too uneven: {hits_a} vs {hits_b} (ratio {ratio:.2f})"
+        )

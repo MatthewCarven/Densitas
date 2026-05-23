@@ -110,7 +110,8 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"Spawning initial population ({cfg.citizen.initial_population})...")
     citizen_mgr = CitizenManager(cfg.citizen, world, world_seed=cfg.world.seed,
-                                  food_cfg=cfg.food)
+                                  food_cfg=cfg.food,
+                                  relic_cfg=cfg.powers.relic)
     print(f"  spawned {len(citizen_mgr.citizens)} citizens")
 
     # P3 - optional rival stub for live testing of multi-faction codepaths.
@@ -203,6 +204,14 @@ def main(argv: list[str] | None = None) -> int:
             # on water for an unusual world seed; the preview can
             # cope with fewer than six relics on screen.
             print(f"  relic seed skipped (f{_f} s{_s}): {_why}")
+    # PR3 step 3: push the now-PLACED relics into the citizen
+    # manager so wander picks can be drawn toward them. Each
+    # future R-key placement / move / retrieve (PR3 step 10) and
+    # shatter (PR3 step 4) will re-sync; for now the static seed
+    # state is enough.
+    citizen_mgr.sync_attractors_from_relics(
+        relic_mgr.relics, cfg.powers.relic.attract_radius,
+    )
     active_mode: Optional[PowerKind] = None
     # Brush size for bulk Raise/Lower (side length, so tile count = brush_size**2).
     # 1..4 -> 1, 4, 9, 16 tiles. Persists across mode switches; only effective

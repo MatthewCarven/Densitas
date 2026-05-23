@@ -430,3 +430,71 @@ and `_pick_wander_target` hook so wandering citizens drift toward
 PLACED relics ~40% of picks. Spec is in `Densitas_relics.md`
 section 8. Hunger-driven FORAGE state must still override (that's
 spec test #11, also lands in step 3).
+
+---
+
+## 2026-05-22 - PR3 step 3: citizen attractors + sync
+
+Builds on PR3 step 2 (`dfb9eef`). Wandering citizens now drift toward
+their faction's PLACED relics ~40% of wander picks. Hunger trumps
+devotion - FORAGE-state citizens ignore attractors and head for food.
+Visible payoff: playtest a fresh game, watch the Open-Eye citizens
+(cyan tint) gradually cluster around the three Witnesses near spawn,
+and the rival Maw citizens (red tint) cluster around their three Bites.
+
+Changes:
+
+- `densitas/citizen.py` - `CitizenManager.__init__` adds optional
+  `relic_cfg`. New field `self.attractors: list[tuple[int,int,int,int]]`
+  (tx, ty, radius, faction). New method `sync_attractors_from_relics`
+  filters to PLACED-only. `_pick_wander_target` refactored: pulls out
+  `_random_wander_target` as a helper and adds new `_random_in_disc`
+  (polar sampling - no rejection loop). Attractor branch sits between
+  the Inspire-bias check and the random-wander fallback, gated on:
+  citizen NOT in FORAGE, relic_cfg present, same-faction attractors
+  exist, and `rng.random() < attract_probability`.
+- `densitas/main.py` - CitizenManager construction gets
+  `relic_cfg=cfg.powers.relic`. After the seed-placements loop, calls
+  `cm.sync_attractors_from_relics(relic_mgr.relics, attract_radius)`.
+  Step 10 (R-key input) will re-sync after each placement; step 4
+  (shatter rule) will re-sync after each shatter.
+- `tests/test_relics.py` - 8 new tests (33 -> 41 in this file): spec
+  #9 (~40% hit ratio over 1000 picks, +/-5% tolerance), spec #11
+  (FORAGE override), plus smoke - no attractors -> home wander,
+  other-faction relic doesn't attract, sync filters PLACED only,
+  re-sync reflects state change, None relic_cfg disables branch,
+  multiple-relic uniform pick.
+
+Tests: **130 / 130 pass** headlessly (89 original + 24 step-1 +
+9 step-2 + 8 step-3), `SDL_VIDEODRIVER=dummy`, `--assert=plain`,
+fresh cache. Smoke-run on default-seed world: citizen near a relic
+saw 88% of wander picks land within attract_radius (proximity makes
+the random-wander disc overlap the attract disc - this is correct
+behaviour, the spec's '~40%' is the *added* pull on top of random
+wander, isolated in test #9 by placing the relic far from home).
+
+Implementation notes worth keeping in head:
+
+- `_random_in_disc` returns Optional - returns None after 8 failed
+  walkable-tile picks. Caller falls back to `_random_wander_target`
+  so a relic placed on a peninsula doesn't strand citizens.
+- `sync_attractors_from_relics` compares `int(r.state) == 1` rather
+  than `r.state == RelicState.PLACED` to avoid the citizen -> relics
+  import direction. The integer value is stable per the spec's
+  save-format requirement.
+- The attractor branch checks `c.state != CitizenState.FORAGE` BEFORE
+  rolling the probability die - so the probability roll only fires
+  when devotion is actually possible. Minor RNG-sequence consequence
+  but makes the FORAGE override explicit.
+
+Not in this commit (next PR3 steps):
+- Shatter rule + summary population (PR3 step 4 - section 9)
+- R / Shift+R input modes (PR3 step 10 - section 3)
+- HUD tray + summary panel (PR3 steps 8-9 - sections 5-6)
+
+**Next session:** PR3 step 4 - `RelicManager.tick` drives `threat_timer`
+from rival/player belief at each PLACED relic's tile, fires PLACED ->
+SHATTERED when threshold sustains for `shatter_time`, builds the
+`ShatterSummary`. Spec is in `Densitas_relics.md` section 9. The
+data model already exposes the 12 summary fields and `threat_timer`
+/ `_placed_time_accum` plumbing, so step 4 is mostly tick-loop math.
