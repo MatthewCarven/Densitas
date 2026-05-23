@@ -38,7 +38,12 @@ from .food import FoodField
 from .hud import HUD
 from .powers import PowerSystem, PowerKind, POWERS
 from .rhetoric import Rhetoric, make_picker
-from .relics import RelicManager, RelicState
+from .relics import (
+    RelicManager, RelicState,
+    RelicMode, RelicInputState,
+    cycle_r_key, cycle_shift_r_key,
+    _name_for as _relic_name_for,
+)
 
 
 # Keyboard bindings for power-mode selection. (Pygame keysym -> PowerKind)
@@ -73,6 +78,71 @@ def parse_args(argv: list[str]) -> dict:
         # Skip unknowns silently - pygame.main might inherit argv.
         i += 1
     return out
+
+
+def _relic_mode_label(state: RelicInputState) -> str:
+    """Short human-readable string for the active relic mode.
+
+    Used by the HUD chip and the cursor-preview label. Slot 0 of
+    faction 0 prints as "The First Witness", per RELIC_NAMES.
+    """
+    if state.mode == RelicMode.PLACE:
+        return f"PLACING: {_relic_name_for(state.faction, state.slot)}"
+    if state.mode == RelicMode.MOVE:
+        return f"MOVING: {_relic_name_for(state.faction, state.slot)}"
+    if state.mode == RelicMode.RETRIEVE:
+        return "RETRIEVING (click a placed relic)"
+    return "RELIC: ?"
+
+
+def _apply_relic_input(state: RelicInputState, mgr: RelicManager,
+                       world, tx: int, ty: int,
+                       sim_t: float) -> tuple[bool, str]:
+    """Dispatch an LMB click to the correct RelicManager mutation
+    based on `state.mode`. Returns (ok, reason).
+    """
+    if state.mode == RelicMode.PLACE:
+        return mgr.place(state.faction, state.slot, tx, ty,
+                          world, sim_t=sim_t)
+    if state.mode == RelicMode.MOVE:
+        return mgr.move(state.faction, state.slot, tx, ty,
+                         world, sim_t=sim_t)
+    if state.mode == RelicMode.RETRIEVE:
+        for r in mgr.for_faction(state.faction):
+            if (r.state == RelicState.PLACED
+                    and r.tx == tx and r.ty == ty):
+                return mgr.retrieve(state.faction, r.slot,
+                                     sim_t=sim_t)
+        return (False, "no placed relic on this tile")
+    return (False, f"unknown relic mode: {state.mode!r}")
+
+
+def _preview_valid(state: RelicInputState, mgr: RelicManager,
+                    world, tx: int, ty: int) -> bool:
+    """True if an LMB at (tx, ty) right now would succeed.
+
+    Cheap check used by the cursor preview to pick the tint colour.
+    For PLACE/MOVE: tile must be in-bounds and walkable. For
+    RETRIEVE: a PLACED relic of the player's faction must sit on
+    the tile.
+    """
+    if not world.in_bounds(tx, ty):
+        return False
+    if state.mode in (RelicMode.PLACE, RelicMode.MOVE):
+        return is_walkable_tile(int(world.tiles[ty, tx]))
+    if state.mode == RelicMode.RETRIEVE:
+        for r in mgr.for_faction(state.faction):
+            if (r.state == RelicState.PLACED
+                    and r.tx == tx and r.ty == ty):
+                return True
+        return False
+    return False
+
+
+def _relic_god_key(faction: int) -> str:
+    if faction == 0: return "open_eye"
+    if faction == 1: return "maw"
+    return f"faction_{faction}"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -214,6 +284,11 @@ def main(argv: list[str] | None = None) -> int:
     show_relics = True   # toggle with `K` - render-only hide for screenshots / eyeballing.
 
     active_mode: Optional[PowerKind] = None
+    # PR3 step 10: R-key input modes (place/move/retrieve).
+    # Mutually exclusive with active_mode - entering one clears the other.
+    relic_input: Optional[RelicInputState] = None
+    last_relic_fail_at: float = -1.0
+    last_relic_fail_reason: str = ""
     # Brush size for bulk Raise/Lower (side length, so tile count = brush_size**2).
     # 1..4 -> 1, 4, 9, 16 tiles. Persists across mode switches; only effective
     # while active_mode is RAISE or LOWER. Modulated by +/- (top row or keypad).
@@ -235,7 +310,9 @@ def main(argv: list[str] | None = None) -> int:
                 running = False
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
-                    if active_mode is not None:
+                    if relic_input is not None:
+                        relic_input = None
+                    elif active_mode is not None:
                         active_mode = None
                     else:
                         running = False
@@ -279,10 +356,72 @@ def main(argv: list[str] | None = None) -> int:
                                 f"brush {brush_size}x{brush_size} "
                                 f"({brush_size * brush_size} tiles)"
                             )
+                elif event.key == pygame.K_r:
+                    # PR3 step 10: R cycles place/move; Shift+R toggles retrieve.
+                    if event.mod & pygame.KMOD_SHIFT:
+                        relic_input = cycle_shift_r_key(
+                            relic_input, relic_mgr, faction=0,
+                        )
+                    else:
+                        relic_input = cycle_r_key(
+                            relic_input, relic_mgr, faction=0,
+                        )
+                    if relic_input is not None:
+                        # Mutual exclusion with power modes.
+                        active_mode = None
                 elif event.key in POWER_KEYS:
                     active_mode = POWER_KEYS[event.key]
             elif event.type == pygame.MOUSEBUTTONDOWN:
-                if event.button == 1 and active_mode is not None:
+                if event.button == 1 and relic_input is not None:
+                    # PR3 step 10: relic-mode LMB.
+                    mx, my = event.pos
+                    rtx, rty = _screen_to_tile(mx, my, cam, cfg)
+                    _mode = relic_input.mode
+                    _slot = relic_input.slot
+                    _faction = relic_input.faction
+                    ok, reason = _apply_relic_input(
+                        relic_input, relic_mgr, world,
+                        rtx, rty, sim_t=sim_time,
+                    )
+                    if ok:
+                        # Re-sync attractors so a fresh PLACED relic
+                        # immediately starts pulling, and retrieved /
+                        # moved relics update their pull tile.
+                        citizen_mgr.sync_attractors_from_relics(
+                            relic_mgr.relics,
+                            cfg.powers.relic.attract_radius,
+                        )
+                        # Scripture: stdout placeholder for now
+                        # (step 12 wires the in-game log with the new
+                        # rhetoric.json pool keys).
+                        _key = ("relic_placed" if _mode == RelicMode.PLACE
+                                else "relic_moved" if _mode == RelicMode.MOVE
+                                else "relic_retrieved")
+                        try:
+                            _line = rhet.pick(
+                                _key, _relic_god_key(_faction),
+                                sim_t=sim_time,
+                            )
+                            print(f"  [scripture {_key}] f{_faction}: {_line}")
+                        except Exception:
+                            # Pool key missing - silent until step 12.
+                            pass
+                        # Auto-advance through AVAILABLE on PLACE; stay
+                        # in mode on MOVE / RETRIEVE so the player can
+                        # chain more without re-pressing R.
+                        if _mode == RelicMode.PLACE:
+                            relic_input = cycle_r_key(
+                                relic_input, relic_mgr, faction=0,
+                            )
+                            # Suppress mode-flip to MOVE - the user
+                            # expected another place, not a move.
+                            if (relic_input is not None
+                                    and relic_input.mode == RelicMode.MOVE):
+                                relic_input = None
+                    else:
+                        last_relic_fail_at = sim_time
+                        last_relic_fail_reason = reason
+                elif event.button == 1 and active_mode is not None:
                     mx, my = event.pos
                     tx, ty = _screen_to_tile(mx, my, cam, cfg)
                     # P3-Queue: queueable kinds go through cast_or_queue
@@ -323,6 +462,9 @@ def main(argv: list[str] | None = None) -> int:
                     if first_fail is not None:
                         last_cast_failed_at = sim_time
                         last_cast_reason = first_fail
+                elif event.button == 3 and relic_input is not None:
+                    # PR3 step 10: RMB cancels relic mode.
+                    relic_input = None
                 elif event.button == 3:
                     # P3-Queue: RMB on a queued tile cancels that tile
                     # first; falls through to mode-cancel only if no
@@ -417,6 +559,23 @@ def main(argv: list[str] | None = None) -> int:
         renderer.blit_cast_queue(screen, power_system.queues,
                                   cam.x, cam.y, cast_chip_font)
 
+        # PR3 step 10: relic-mode cursor preview - draws above citizens.
+        if relic_input is not None and pygame.mouse.get_focused():
+            mx, my = pygame.mouse.get_pos()
+            rtx, rty = _screen_to_tile(mx, my, cam, cfg)
+            renderer.blit_relic_preview(
+                screen,
+                faction=relic_input.faction,
+                tx=rtx, ty=rty,
+                valid=_preview_valid(
+                    relic_input, relic_mgr, world, rtx, rty,
+                ),
+                attract_radius=cfg.powers.relic.attract_radius,
+                cam_x=cam.x, cam_y=cam.y,
+                font=cast_chip_font,
+                label=_relic_mode_label(relic_input),
+            )
+
         # Cast preview (P3) - draw above citizens, below HUD.
         if active_mode is not None and pygame.mouse.get_focused():
             mx, my = pygame.mouse.get_pos()
@@ -447,6 +606,27 @@ def main(argv: list[str] | None = None) -> int:
         hud.draw(screen, citizen_mgr, belief,
                   powers=power_system, sim_t=sim_time,
                   active_mode=(int(active_mode) if active_mode is not None else None))
+        # PR3 step 8: relic tray, bottom-right corner. Display-only.
+        _tray_mouse = pygame.mouse.get_pos() if pygame.mouse.get_focused() else None
+        hud.blit_relic_tray(
+            screen,
+            relic_mgr.for_faction(0),
+            sim_t=sim_time,
+            shatter_time=cfg.powers.relic.shatter_time,
+            mouse_pos=_tray_mouse,
+        )
+        # PR3 step 10: relic-mode chip above the HUD box.
+        if relic_input is not None:
+            _accent = (
+                (90, 200, 220) if relic_input.mode == RelicMode.PLACE
+                else (220, 170, 60) if relic_input.mode == RelicMode.MOVE
+                else (210, 70, 60)
+            )
+            hud.draw_relic_mode_chip(
+                screen,
+                label=_relic_mode_label(relic_input),
+                accent=_accent,
+            )
         pygame.display.flip()
 
     pygame.quit()

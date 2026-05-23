@@ -596,3 +596,149 @@ BeliefField allocation. Pure ordering change, no logic touched.
   stage and exits 0 cleanly.
 
 Landed via `commit_hotfix_relic_order.cmd`.
+
+## 2026-05-23 - PR3 step 10 staged: R-key input modes
+
+Densitas is now *interactively* playable. The R key cycles through
+your relic slots, you click to commit, and the world responds.
+
+Sub-changes (one logical commit, six files):
+
+- `densitas/relics.py` - appended `RelicMode` IntEnum
+  (PLACE / MOVE / RETRIEVE), `RelicInputState` dataclass
+  (mode / slot / faction), and two pure helpers:
+  `cycle_r_key` advances through AVAILABLE slots then PLACED slots
+  then cancels; `cycle_shift_r_key` toggles RETRIEVE. No pygame,
+  no RelicManager mutation - the event loop owns construction and
+  consequence. Both are unit-testable in isolation.
+
+- `densitas/render.py` - `Renderer.blit_relic_preview` abstract
+  method + PixelRenderer impl. Cyan attract-radius circle (red
+  when invalid), 50% alpha faction glyph at the cursor tile, green
+  /red tile tint, and a slot-name label chip below the cursor.
+
+- `densitas/hud.py` - `HUD.draw_relic_mode_chip` floating chip
+  above the bottom-left HUD box. Cyan for PLACE, amber for MOVE,
+  red for RETRIEVE. Doesn't perturb the existing `draw()`
+  signature.
+
+- `densitas/main.py` - the wiring:
+  - K_r handler with KMOD_SHIFT branch.
+  - ESC handler clears `relic_input` first if active.
+  - LMB branch routed through `_apply_relic_input` ahead of the
+    existing power-cast branch. On success: re-sync attractors,
+    print placeholder scripture (in-game log wiring waits for
+    step 12's rhetoric pool), auto-advance PLACE through any
+    remaining AVAILABLE slots (suppressing the auto-flip to MOVE
+    so a "place" click doesn't surprise into "move" mode).
+  - RMB branch cancels relic mode ahead of the existing power
+    RMB path.
+  - Mutual exclusion with `active_mode`: entering relic mode
+    clears the power; entering a power clears relic mode.
+  - Render call to `blit_relic_preview` when mouse focused.
+  - `hud.draw_relic_mode_chip` after `hud.draw`.
+
+- `tests/test_relics.py` - 13 new tests (62 -> 75 total):
+  R-cycle entry from None, slot advance, exhausted-PLACE flips
+  to MOVE, exhausted-MOVE cancels, no-relics returns None,
+  shattered slot skipped, per-faction independence, Shift+R
+  no-placed no-op, Shift+R enters retrieve, Shift+R toggle off,
+  swap from PLACE to RETRIEVE, swap from RETRIEVE to PLACE.
+
+Tests: 151 / 151 pass headlessly (138 before + 13 new),
+`SDL_VIDEODRIVER=dummy`, `--assert=plain`, fresh cache.
+`py_compile` clean on all four touched modules. Full `main()`
+headless boot smoke returns 0.
+
+**Try it:** launch `start.cmd`. Press `R` once: PLACE mode targets
+The First Witness. Click a green-tinted tile. The glyph lands and
+mode auto-advances to The Second Witness. Place again. Press `R`
+again to advance, or `RMB`/`ESC` to cancel. With all three placed,
+press `R`: MOVE mode targets The First Witness. Click anywhere
+walkable to relocate it. `Shift+R` enters RETRIEVE: click a placed
+relic of yours to take it back. The First Witness is now AVAILABLE
+again; press `R` to re-place it elsewhere.
+
+Belief halos around moved relics fade out (the moved-from cell
+loses scatter; the new cell starts fading in from 0). Citizens
+in non-FORAGE state drift toward the new tile within ~10 sim
+ticks. The propaganda layer (the actual scripture lines) plugs
+in at step 12 when the rhetoric pool gets the new keys; for now
+the scripture printout is stdout only.
+
+Lands via `commit_relics_step10.cmd`.
+## 2026-05-23 - PR3 step 8 staged: HUD relic tray
+
+Densitas now has a relic tray in the bottom-right corner. Three slots,
+one per relic, display-only - all input still flows through R / Shift+R
+from step 10. Per `Densitas_relics.md` section 5: the tray is a
+read-out, never a click target (the SHATTERED click-to-reopen hook is
+wired in geometry-but-not-behaviour, ready for step 9).
+
+Per-slot rendering (108x56 each, three across with a 3-px gap, anchored
+8 px off the bottom-right corner):
+
+- 24x24 faction glyph (left-aligned). PLACED relics use an alpha-180
+  ghost so AVAILABLE pops. SHATTERED uses a constant skull-X icon
+  built once in `HUD._build_skull_x`.
+- Relic name (font_label 12pt). A strike-through line is drawn across
+  the name on SHATTERED.
+- Status line: "AVAILABLE" / "PLACED (tx,ty)" / "SHATTERED",
+  coloured to match the slot border.
+- PLACED-only bar: 68x4 px. Unthreatened, fills toward 30 sim_s (the
+  place_cooldown fade-in window). Threatened, switches to
+  threat_timer / shatter_time with a "1.4s" countdown right of the
+  bar. Tips amber at any threat > 0, red at >= 70% of shatter_time.
+- Hover tooltip: "Press R to place." (AVAILABLE), "Placed at
+  (tx,ty)." (PLACED), "Lost at (tx,ty) - click to view."
+  (SHATTERED).
+
+Sub-changes (one logical commit, four files):
+
+- `densitas/hud.py` - new TRAY_* constants and four pure helpers
+  (`tray_slot_rects`, `tray_status_label`, `tray_status_color`,
+  `threat_fraction`) testable without pygame, plus the new
+  `HUD.blit_relic_tray` method. A lazy `_ensure_tray_assets` builds
+  24x24 faction glyphs from `GLYPHS_BY_FACTION` plus the skull-X
+  surface on first draw, so the HUD can still be constructed before
+  the display is fully ready. `blit_relic_tray` returns a list of
+  `(Rect, Relic)` pairs so step 9 can wire click-to-reopen on the
+  SHATTERED slot without re-deriving the geometry.
+
+- `densitas/main.py` - calls `hud.blit_relic_tray` after `hud.draw`,
+  passing the player's `relic_mgr.for_faction(0)`, `sim_time`,
+  `cfg.powers.relic.shatter_time`, and the mouse position (or None
+  when the window isn't focused). Single-block insert; no other
+  loop ordering changes.
+
+- `tests/test_relics.py` - 11 new tests (151 -> 162 total):
+  - 70-72: `tray_slot_rects` geometry at 1 / 3 / 5 slot widths.
+  - 73: `tray_status_label` per state.
+  - 74-78: `tray_status_color` across state x threat_frac
+    combinations (AVAILABLE green, PLACED unthreatened cyan, low
+    threat amber, high threat red, SHATTERED red).
+  - 79: `threat_fraction` returns 0 for non-PLACED and clamps to
+    [0, 1] for PLACED.
+  - 80: defensive `shatter_time = 0` guard returns 0 rather than
+    dividing by zero.
+
+Tests: 162 / 162 pass headlessly (151 before + 11 new),
+`SDL_VIDEODRIVER=dummy`, `--assert=plain`, fresh cache. `py_compile`
+clean on both touched modules. A direct render sweep through all four
+state paths (AVAILABLE, PLACED unthreatened, PLACED threatened, and
+SHATTERED) on a hidden 1280x720 surface returns clean rects in-bounds.
+Full `main()` headless boot smoke returns 0.
+
+**Try it:** launch `start.cmd`. The tray sits in the bottom-right
+corner from the first frame, all three slots green ("AVAILABLE -
+Press R to place."). Press R, click a tile. The slot turns cyan with a
+small age tick that fills over the first 30 sim_sec. Carve a rival
+belief well next to one of your relics (e.g. with Curse, or by letting
+a rival population grow) - the slot tips amber, then red, with a live
+countdown. After shatter, the slot greys out with a struck-through
+name and a skull-X icon. Hover any slot for the tooltip.
+
+Step 9 (summary-panel slide-in) can now bind the click-to-reopen hook
+to the SHATTERED slot's `Rect` from `blit_relic_tray`'s return value.
+
+Lands via `commit_relics_step8.cmd`.
