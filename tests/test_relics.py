@@ -1212,3 +1212,321 @@ def test_shatter_persists_position_and_summary_post_shatter():
     ok, why = mgr.place(0, 0, 5, 5, w, sim_t=999.0)
     assert not ok
     assert "shattered" in why
+
+# ===========================================================================
+# PR3 step 10 - R-key input cycle helpers
+# ===========================================================================
+
+from densitas.relics import (
+    RelicMode, RelicInputState,
+    cycle_r_key, cycle_shift_r_key,
+)
+
+
+def _fresh_step10_mgr():
+    cfg = _make_relic_cfg(initial_count=3)
+    return RelicManager(cfg, n_factions=2)
+
+
+def test_50_cycle_r_from_none_enters_place_on_lowest_available():
+    mgr = _fresh_step10_mgr()
+    s = cycle_r_key(None, mgr, faction=0)
+    assert s is not None
+    assert s.mode == RelicMode.PLACE
+    assert s.slot == 0
+    assert s.faction == 0
+
+
+def test_51_cycle_r_advances_through_available_slots():
+    mgr = _fresh_step10_mgr()
+    s = RelicInputState(RelicMode.PLACE, 0, 0)
+    s2 = cycle_r_key(s, mgr, faction=0)
+    assert s2.mode == RelicMode.PLACE
+    assert s2.slot == 1
+    s3 = cycle_r_key(s2, mgr, faction=0)
+    assert s3.mode == RelicMode.PLACE
+    assert s3.slot == 2
+
+
+def test_52_cycle_r_from_last_available_when_all_placed_enters_move():
+    mgr = _fresh_step10_mgr()
+    world = _make_world()
+    for slot in range(3):
+        ok, _ = mgr.place(0, slot, 10 + slot, 10, world, sim_t=0.0)
+        assert ok
+    # All AVAILABLE exhausted - cycle from None should land in MOVE.
+    s = cycle_r_key(None, mgr, faction=0)
+    assert s is not None
+    assert s.mode == RelicMode.MOVE
+    assert s.slot == 0
+
+
+def test_53_cycle_r_advances_through_placed_in_move_mode():
+    mgr = _fresh_step10_mgr()
+    world = _make_world()
+    for slot in range(3):
+        ok, _ = mgr.place(0, slot, 10 + slot, 10, world, sim_t=0.0)
+        assert ok
+    s = RelicInputState(RelicMode.MOVE, 0, 0)
+    s2 = cycle_r_key(s, mgr, faction=0)
+    assert s2.mode == RelicMode.MOVE
+    assert s2.slot == 1
+
+
+def test_54_cycle_r_from_last_placed_cancels():
+    mgr = _fresh_step10_mgr()
+    world = _make_world()
+    for slot in range(3):
+        ok, _ = mgr.place(0, slot, 10 + slot, 10, world, sim_t=0.0)
+    s = RelicInputState(RelicMode.MOVE, 2, 0)
+    s2 = cycle_r_key(s, mgr, faction=0)
+    assert s2 is None
+
+
+def test_55_cycle_r_with_no_relics_returns_none():
+    mgr = _fresh_step10_mgr()
+    # All shattered = neither AVAILABLE nor PLACED.
+    for r in mgr.for_faction(0):
+        r.state = RelicState.SHATTERED
+    s = cycle_r_key(None, mgr, faction=0)
+    assert s is None
+
+
+def test_56_cycle_r_skips_shattered_when_picking_available():
+    """A SHATTERED slot in the middle shouldn't trip the AVAILABLE picker."""
+    mgr = _fresh_step10_mgr()
+    # Manually break slot 1.
+    mgr.for_faction(0)[1].state = RelicState.SHATTERED
+    s = cycle_r_key(None, mgr, faction=0)
+    assert s is not None
+    assert s.mode == RelicMode.PLACE
+    assert s.slot == 0
+    # Advance from slot 0: should jump straight to slot 2 (skipping 1).
+    s2 = cycle_r_key(s, mgr, faction=0)
+    assert s2.mode == RelicMode.PLACE
+    assert s2.slot == 2
+
+
+def test_57_cycle_r_per_faction_independent():
+    """faction=1 should only see its own slots."""
+    mgr = _fresh_step10_mgr()
+    world = _make_world()
+    # Place all of faction 0; faction 1 stays empty.
+    for slot in range(3):
+        ok, _ = mgr.place(0, slot, 10 + slot, 10, world, sim_t=0.0)
+    s = cycle_r_key(None, mgr, faction=1)
+    assert s.mode == RelicMode.PLACE
+    assert s.faction == 1
+    assert s.slot == 0
+
+
+def test_58_shift_r_from_none_no_placed_returns_none():
+    mgr = _fresh_step10_mgr()
+    s = cycle_shift_r_key(None, mgr, faction=0)
+    assert s is None
+
+
+def test_59_shift_r_from_none_with_placed_enters_retrieve():
+    mgr = _fresh_step10_mgr()
+    world = _make_world()
+    ok, _ = mgr.place(0, 0, 10, 10, world, sim_t=0.0)
+    assert ok
+    s = cycle_shift_r_key(None, mgr, faction=0)
+    assert s is not None
+    assert s.mode == RelicMode.RETRIEVE
+    assert s.slot == -1
+    assert s.faction == 0
+
+
+def test_60_shift_r_toggles_off_retrieve():
+    mgr = _fresh_step10_mgr()
+    world = _make_world()
+    ok, _ = mgr.place(0, 0, 10, 10, world, sim_t=0.0)
+    s = RelicInputState(RelicMode.RETRIEVE, -1, 0)
+    s2 = cycle_shift_r_key(s, mgr, faction=0)
+    assert s2 is None
+
+
+def test_61_shift_r_from_place_switches_to_retrieve():
+    """Pressing Shift+R while in PLACE mode should swap to RETRIEVE,
+    not cancel."""
+    mgr = _fresh_step10_mgr()
+    world = _make_world()
+    ok, _ = mgr.place(0, 0, 10, 10, world, sim_t=0.0)
+    s = RelicInputState(RelicMode.PLACE, 1, 0)  # currently placing slot 1
+    s2 = cycle_shift_r_key(s, mgr, faction=0)
+    assert s2 is not None
+    assert s2.mode == RelicMode.RETRIEVE
+
+
+def test_62_cycle_r_from_retrieve_jumps_to_place():
+    """Pressing R while in RETRIEVE should enter PLACE on lowest
+    AVAILABLE (per cycle_r_key docstring)."""
+    mgr = _fresh_step10_mgr()
+    world = _make_world()
+    ok, _ = mgr.place(0, 0, 10, 10, world, sim_t=0.0)
+    s = RelicInputState(RelicMode.RETRIEVE, -1, 0)
+    s2 = cycle_r_key(s, mgr, faction=0)
+    assert s2 is not None
+    assert s2.mode == RelicMode.PLACE
+    # Slot 0 is now PLACED; should land on slot 1 (lowest remaining
+    # AVAILABLE).
+    assert s2.slot == 1
+
+
+
+# =============================================================================
+# PR3 step 8 - relic-tray pure helpers (see densitas/hud.py).
+# Tests are intentionally pure-Python: no pygame.Surface, no SDL. The pure
+# helpers (`tray_slot_rects`, `tray_status_label`, `tray_status_color`,
+# `threat_fraction`) compute geometry and colour mapping; the actual blit
+# round-trip is exercised by the headless main() smoke at the end of the
+# step.
+# =============================================================================
+
+from densitas.hud import (
+    tray_slot_rects, tray_status_label, tray_status_color,
+    threat_fraction,
+    TRAY_SLOT_W, TRAY_SLOT_H, TRAY_SLOT_GAP, TRAY_MARGIN,
+    TRAY_AVAIL_COLOR, TRAY_PLACED_COLOR, TRAY_THREAT_COLOR,
+    TRAY_SHATTERED_COLOR, TRAY_THREAT_RED_FRAC,
+)
+
+
+def test_70_tray_slot_rects_default_three_slots():
+    """tray_slot_rects yields 3 rects in the bottom-right corner,
+    stacked horizontally with TRAY_SLOT_GAP between them."""
+    sw, sh = 1280, 720
+    rects = tray_slot_rects(sw, sh, n_slots=3)
+    assert len(rects) == 3
+    # All rects use the canonical slot size.
+    for (sx, sy, w, h) in rects:
+        assert w == TRAY_SLOT_W
+        assert h == TRAY_SLOT_H
+    # Bottom edge sits TRAY_MARGIN above the screen bottom.
+    bottoms = {sy + h for (sx, sy, w, h) in rects}
+    assert bottoms == {sh - TRAY_MARGIN}
+    # Right edge of the rightmost slot is TRAY_MARGIN from the right
+    # screen edge.
+    rightmost = max(sx + w for (sx, sy, w, h) in rects)
+    assert rightmost == sw - TRAY_MARGIN
+    # X spacing between consecutive slots matches the gap constant.
+    xs = [sx for (sx, sy, w, h) in rects]
+    deltas = [b - a for a, b in zip(xs, xs[1:])]
+    assert all(d == TRAY_SLOT_W + TRAY_SLOT_GAP for d in deltas)
+
+
+def test_71_tray_slot_rects_scales_with_n_slots():
+    """Five slots still anchor right and pack contiguously."""
+    sw, sh = 1280, 720
+    rects = tray_slot_rects(sw, sh, n_slots=5)
+    assert len(rects) == 5
+    rightmost = max(sx + w for (sx, sy, w, h) in rects)
+    assert rightmost == sw - TRAY_MARGIN
+    leftmost = min(sx for (sx, sy, w, h) in rects)
+    # Sanity: the tray width matches 5 slots + 4 gaps.
+    expected_total = 5 * TRAY_SLOT_W + 4 * TRAY_SLOT_GAP
+    assert rightmost - leftmost == expected_total
+
+
+def test_72_tray_slot_rects_single_slot_no_gap():
+    """n_slots=1 - the gap arithmetic must not produce a negative offset."""
+    sw, sh = 1024, 600
+    rects = tray_slot_rects(sw, sh, n_slots=1)
+    assert len(rects) == 1
+    sx, sy, w, h = rects[0]
+    assert sx + w == sw - TRAY_MARGIN
+    assert sy + h == sh - TRAY_MARGIN
+    assert w == TRAY_SLOT_W
+
+
+def test_73_tray_status_label_per_state():
+    """AVAILABLE / PLACED / SHATTERED render to the expected strings."""
+    cfg = _make_relic_cfg()
+    mgr = RelicManager(cfg, n_factions=2)
+    r = mgr.get(0, 0)
+    assert tray_status_label(r) == "AVAILABLE"
+
+    ok, _ = mgr.place(0, 0, 7, 11, _make_world(), sim_t=0.0)
+    assert ok
+    assert tray_status_label(mgr.get(0, 0)) == "PLACED (7,11)"
+
+    # Force a SHATTERED transition for the label test.
+    r.state = RelicState.SHATTERED
+    assert tray_status_label(r) == "SHATTERED"
+
+
+def test_74_tray_status_color_available_is_green():
+    cfg = _make_relic_cfg()
+    mgr = RelicManager(cfg, n_factions=2)
+    r = mgr.get(0, 0)
+    assert tray_status_color(r) == TRAY_AVAIL_COLOR
+
+
+def test_75_tray_status_color_placed_unthreatened_is_cyan():
+    cfg = _make_relic_cfg()
+    mgr = RelicManager(cfg, n_factions=2)
+    mgr.place(0, 0, 5, 5, _make_world(), sim_t=0.0)
+    r = mgr.get(0, 0)
+    assert tray_status_color(r, threat_frac=0.0) == TRAY_PLACED_COLOR
+
+
+def test_76_tray_status_color_placed_low_threat_is_amber():
+    cfg = _make_relic_cfg()
+    mgr = RelicManager(cfg, n_factions=2)
+    mgr.place(0, 0, 5, 5, _make_world(), sim_t=0.0)
+    r = mgr.get(0, 0)
+    # 0 < frac < TRAY_THREAT_RED_FRAC -> amber
+    assert tray_status_color(r, threat_frac=0.3) == TRAY_THREAT_COLOR
+
+
+def test_77_tray_status_color_placed_high_threat_is_red():
+    cfg = _make_relic_cfg()
+    mgr = RelicManager(cfg, n_factions=2)
+    mgr.place(0, 0, 5, 5, _make_world(), sim_t=0.0)
+    r = mgr.get(0, 0)
+    assert tray_status_color(r, threat_frac=TRAY_THREAT_RED_FRAC) == \
+        TRAY_SHATTERED_COLOR
+    assert tray_status_color(r, threat_frac=0.95) == TRAY_SHATTERED_COLOR
+
+
+def test_78_tray_status_color_shattered_is_red_regardless():
+    cfg = _make_relic_cfg()
+    mgr = RelicManager(cfg, n_factions=2)
+    r = mgr.get(0, 0)
+    r.state = RelicState.SHATTERED
+    assert tray_status_color(r) == TRAY_SHATTERED_COLOR
+    # Even with a nonsense frac the SHATTERED color wins.
+    assert tray_status_color(r, threat_frac=0.0) == TRAY_SHATTERED_COLOR
+
+
+def test_79_threat_fraction_only_meaningful_for_placed():
+    """AVAILABLE / SHATTERED always report 0, even if the stale
+    threat_timer happens to be nonzero."""
+    cfg = _make_relic_cfg()
+    mgr = RelicManager(cfg, n_factions=2)
+    r = mgr.get(0, 0)
+    r.threat_timer = 4.0
+    # AVAILABLE
+    assert threat_fraction(r, shatter_time=8.0) == 0.0
+    # PLACED
+    mgr.place(0, 0, 5, 5, _make_world(), sim_t=0.0)
+    r.threat_timer = 4.0
+    assert threat_fraction(r, shatter_time=8.0) == 0.5
+    # Saturates at 1.0
+    r.threat_timer = 99.0
+    assert threat_fraction(r, shatter_time=8.0) == 1.0
+    # SHATTERED -> 0
+    r.state = RelicState.SHATTERED
+    assert threat_fraction(r, shatter_time=8.0) == 0.0
+
+
+def test_80_threat_fraction_zero_shatter_time_does_not_div_by_zero():
+    """Defensive: a misconfigured cfg with shatter_time=0 returns 0
+    instead of crashing."""
+    cfg = _make_relic_cfg()
+    mgr = RelicManager(cfg, n_factions=2)
+    mgr.place(0, 0, 5, 5, _make_world(), sim_t=0.0)
+    r = mgr.get(0, 0)
+    r.threat_timer = 5.0
+    assert threat_fraction(r, shatter_time=0.0) == 0.0

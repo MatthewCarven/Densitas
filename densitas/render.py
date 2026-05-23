@@ -131,6 +131,32 @@ class Renderer(abc.ABC):
         ...
 
     @abc.abstractmethod
+    def blit_relic_preview(self, screen: pygame.Surface,
+                            faction: int, tx: int, ty: int,
+                            valid: bool, attract_radius: int,
+                            cam_x: float, cam_y: float, font,
+                            label: str = "") -> None:
+        """Render a translucent relic-placement preview at (tx, ty).
+
+        PR3 step 10. Drawn while `relic_input` is active in the event
+        loop (R / Shift+R modes). The preview shows the player exactly
+        where the relic will land if they click:
+
+        * A cyan attract-radius circle outlines the pull zone
+          (radius = `attract_radius` tiles).
+        * The faction glyph is blitted at 50% alpha on the cursor
+          tile, bottom-centred like `blit_relics`.
+        * A green or red tile tint indicates validity.
+        * If `label` is non-empty, it renders as a small chip just
+          below the cursor tile (e.g. "PLACING: The First Witness").
+
+        Mirrors `blit_cast_preview` in shape but is its own method
+        because the visuals are distinct (circle vs square brush,
+        ghost glyph vs cast effect chip).
+        """
+        ...
+
+    @abc.abstractmethod
     def repaint_tile(self, world_surface: pygame.Surface, world: World,
                       tx: int, ty: int) -> None:
         """Re-blit a single tile's sprite onto the cached world surface.
@@ -655,6 +681,65 @@ class PixelRenderer(Renderer):
             if sx + target < 0 or sy + target < 0 or sx >= vw or sy >= vh:
                 continue
             screen.blit(sprite, (sx, sy))
+
+    # -- relic preview (PR3 step 10) ----------------------------------------
+
+    def blit_relic_preview(self, screen: pygame.Surface,
+                            faction: int, tx: int, ty: int,
+                            valid: bool, attract_radius: int,
+                            cam_x: float, cam_y: float, font,
+                            label: str = "") -> None:
+        ts = self.cfg.tile_size
+        target = RELIC_SPRITE_SIZE_PX
+        # Tile centre in screen space (for the attract circle).
+        cx = int(tx * ts - cam_x + ts // 2)
+        cy = int(ty * ts - cam_y + ts // 2)
+        # Cyan attract circle (or red rejection circle if invalid).
+        ring_color = (90, 200, 220) if valid else (210, 70, 60)
+        try:
+            pygame.draw.circle(
+                screen, ring_color, (cx, cy),
+                attract_radius * ts, width=1,
+            )
+        except Exception:
+            # Defensive: if cx/cy are far off-screen the C draw may
+            # complain on some SDL builds; skip the ring rather than
+            # crash the frame.
+            pass
+        # Tile tint - green for valid, red for invalid.
+        tint_color = (110, 200, 80, 80) if valid else (210, 70, 60, 80)
+        tile_surf = pygame.Surface((ts, ts), pygame.SRCALPHA)
+        tile_surf.fill(tint_color)
+        screen.blit(
+            tile_surf,
+            (int(tx * ts - cam_x), int(ty * ts - cam_y)),
+        )
+        # Translucent glyph (50% alpha) at the cursor tile.
+        sprite = self._relic_sprites.get(int(faction))
+        if sprite is not None:
+            ghost = sprite.copy()
+            ghost.set_alpha(128)
+            ox = (ts - target) // 2
+            oy = ts - target
+            sx = int(tx * ts - cam_x + ox)
+            sy = int(ty * ts - cam_y + oy)
+            screen.blit(ghost, (sx, sy))
+        # Slot-name label chip below the cursor.
+        if label and font is not None:
+            text_surf = font.render(label, True, (235, 235, 245))
+            pad_x, pad_y = 4, 2
+            chip_w = text_surf.get_width() + pad_x * 2
+            chip_h = text_surf.get_height() + pad_y * 2
+            cx_label = int(tx * ts - cam_x + ts // 2 - chip_w // 2)
+            cy_label = int(ty * ts - cam_y + ts + 6)
+            bg = pygame.Surface((chip_w, chip_h), pygame.SRCALPHA)
+            bg.fill((10, 10, 16, 200))
+            screen.blit(bg, (cx_label, cy_label))
+            pygame.draw.rect(
+                screen, ring_color,
+                (cx_label, cy_label, chip_w, chip_h), width=1,
+            )
+            screen.blit(text_surf, (cx_label + pad_x, cy_label + pad_y))
 
 
 def make_renderer(cfg: RenderConfig) -> Renderer:

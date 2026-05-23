@@ -440,3 +440,117 @@ class RelicManager:
             if other.tx == tx and other.ty == ty:
                 return (False, "tile already has a same-faction relic")
         return (True, "valid")
+
+# =============================================================================
+# PR3 step 10 - R-key input modes.
+#
+# Pure state machine, no pygame, no rendering. The main event loop owns
+# construction (`relic_input: Optional[RelicInputState]`) and calls
+# `cycle_r_key` / `cycle_shift_r_key` on each R press; `None` return
+# means "cancel mode".
+#
+# See `Densitas_relics.md` section 3 for the cycle behaviour these
+# helpers implement.
+# =============================================================================
+
+
+class RelicMode(enum.IntEnum):
+    """Three input modes from `Densitas_relics.md` section 3.
+
+    PLACE     - cursor targets an AVAILABLE slot; LMB transitions
+                AVAILABLE -> PLACED.
+    MOVE      - cursor targets a PLACED slot; LMB transitions
+                PLACED -> PLACED (new tile).
+    RETRIEVE  - cursor seeks any PLACED relic of the player's
+                faction; LMB transitions PLACED -> AVAILABLE.
+    """
+    PLACE    = 1
+    MOVE     = 2
+    RETRIEVE = 3
+
+
+@dataclass
+class RelicInputState:
+    """One tick of the R-key cycle. The event loop holds an
+    `Optional[RelicInputState]`; None means "no relic mode active".
+
+    `slot` is the slot the cursor is currently targeting. For
+    RETRIEVE it's -1 (any PLACED relic of the faction).
+    """
+    mode: RelicMode
+    slot: int
+    faction: int
+
+
+def _available_slots(mgr: "RelicManager", faction: int) -> list[int]:
+    return sorted(
+        r.slot for r in mgr.for_faction(faction)
+        if r.state == RelicState.AVAILABLE
+    )
+
+
+def _placed_slots(mgr: "RelicManager", faction: int) -> list[int]:
+    return sorted(
+        r.slot for r in mgr.for_faction(faction)
+        if r.state == RelicState.PLACED
+    )
+
+
+def cycle_r_key(state: Optional[RelicInputState],
+                mgr: "RelicManager",
+                faction: int) -> Optional[RelicInputState]:
+    """Compute the next state when R is pressed (no Shift).
+
+    Cycle order per spec section 3.1:
+      1. None / RETRIEVE -> first AVAILABLE slot in PLACE mode
+      2. PLACE on slot N -> next AVAILABLE slot > N in PLACE mode
+      3. PLACE exhausted -> first PLACED slot in MOVE mode
+      4. MOVE on slot N -> next PLACED slot > N in MOVE mode
+      5. MOVE exhausted -> None (cancel)
+
+    A RETRIEVE state is treated like None - pressing R while in
+    retrieve switches to placement.
+    """
+    avail = _available_slots(mgr, faction)
+    placed = _placed_slots(mgr, faction)
+
+    if state is None or state.mode == RelicMode.RETRIEVE:
+        if avail:
+            return RelicInputState(RelicMode.PLACE, avail[0], faction)
+        if placed:
+            return RelicInputState(RelicMode.MOVE, placed[0], faction)
+        return None
+
+    if state.mode == RelicMode.PLACE:
+        nxt = [s for s in avail if s > state.slot]
+        if nxt:
+            return RelicInputState(RelicMode.PLACE, nxt[0], faction)
+        if placed:
+            return RelicInputState(RelicMode.MOVE, placed[0], faction)
+        return None
+
+    if state.mode == RelicMode.MOVE:
+        nxt = [s for s in placed if s > state.slot]
+        if nxt:
+            return RelicInputState(RelicMode.MOVE, nxt[0], faction)
+        return None
+
+    return None
+
+
+def cycle_shift_r_key(state: Optional[RelicInputState],
+                      mgr: "RelicManager",
+                      faction: int) -> Optional[RelicInputState]:
+    """Compute the next state when Shift+R is pressed.
+
+    Per spec section 3.2 RETRIEVE is a single state (no cycle). If
+    Shift+R is pressed while RETRIEVE is already active, it cancels.
+    If pressed in any other state, switches to RETRIEVE. No PLACED
+    relics -> no-op (returns None).
+    """
+    if state is not None and state.mode == RelicMode.RETRIEVE:
+        return None
+    if not _placed_slots(mgr, faction):
+        return None
+    return RelicInputState(RelicMode.RETRIEVE, -1, faction)
+

@@ -3,16 +3,22 @@
 P1+P2+P1.5+P3 elements:
   * Population counter (faction 0)
   * Current divine tier banner
-  * Belief pool bar (P3 — replaces the old static total)
+  * Belief pool bar (P3 - replaces the old static total)
   * Hunger summary (fed / hungry / starving) + a slim three-segment bar
-  * Cooldown row (P3 — one icon per power, lit/dim/cooling)
-  * Scripture log (P3 — top-right corner, last 4 lines, fading)
+  * Cooldown row (P3 - one icon per power, lit/dim/cooling)
+  * Scripture log (P3 - top-right corner, last 4 lines, fading)
+  * Relic tray (PR3 step 8 - bottom-right corner, 3 slots, display-only)
 """
 from __future__ import annotations
 import pygame
 from typing import Optional
 
 from .citizen import CitizenManager, tier_for, TIERS
+from .relics import Relic, RelicState
+from .relic_glyphs import (
+    GLYPH_SIZE_PX as RELIC_GLYPH_NATIVE_PX,
+    GLYPHS_BY_FACTION as RELIC_GLYPHS_BY_FACTION,
+)
 
 HUD_BG       = (10, 10, 16, 200)
 HUD_PARCH    = (216, 201, 168)
@@ -22,7 +28,28 @@ HUD_GREEN    = (110, 200, 80)
 HUD_AMBER    = (220, 170, 60)
 HUD_RED      = (210, 70, 60)
 
-# Cooldown row — first letter of each power for the icon labels.
+# ---- relic tray (PR3 step 8) ----------------------------------------------
+# Layout constants live as module-level tuples so the pure helpers below can
+# be exercised in unit tests without instantiating pygame surfaces.
+
+TRAY_SLOT_W: int       = 108
+TRAY_SLOT_H: int       = 56
+TRAY_SLOT_GAP: int     = 3
+TRAY_MARGIN: int       = 8
+TRAY_GLYPH_PX: int     = 24
+TRAY_AVAIL_COLOR       = HUD_GREEN
+TRAY_PLACED_COLOR      = HUD_ACCENT
+TRAY_THREAT_COLOR      = HUD_AMBER
+TRAY_SHATTERED_COLOR   = HUD_RED
+TRAY_NAME_COLOR        = HUD_PARCH
+TRAY_NAME_STRUCK_COLOR = (130, 90, 90)
+TRAY_BG_COLOR          = (12, 12, 20, 210)
+SKULL_X_COLOR          = (160, 50, 50)
+
+# Threshold at which the threat bar tips amber -> red (last 30% of the timer).
+TRAY_THREAT_RED_FRAC: float = 0.7
+
+# Cooldown row - first letter of each power for the icon labels.
 # Kind values mirror PowerKind in powers.py to avoid an import cycle.
 COOLDOWN_ICONS: tuple[tuple[int, int, str, tuple[int, int, int]], ...] = (
     # (PowerKind value, tier_required, label, accent_color)
@@ -36,6 +63,73 @@ COOLDOWN_ICONS: tuple[tuple[int, int, str, tuple[int, int, int]], ...] = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Pure helpers for the relic tray (no pygame required).
+# These are imported by tests/test_relics.py to verify tray geometry and the
+# state-to-color / threat-fraction mappings without spinning up SDL.
+# ---------------------------------------------------------------------------
+
+def tray_slot_rects(screen_w: int, screen_h: int,
+                    n_slots: int = 3) -> list[tuple[int, int, int, int]]:
+    """Return (x, y, w, h) tuples for each tray slot.
+
+    Anchored to the bottom-right corner with `TRAY_MARGIN` padding from the
+    right and bottom edges. Slots stack horizontally left-to-right in slot
+    order so the lowest-slot relic is on the left of the tray.
+    """
+    total_w = n_slots * TRAY_SLOT_W + max(0, n_slots - 1) * TRAY_SLOT_GAP
+    tray_x = screen_w - total_w - TRAY_MARGIN
+    tray_y = screen_h - TRAY_SLOT_H - TRAY_MARGIN
+    rects = []
+    for i in range(n_slots):
+        sx = tray_x + i * (TRAY_SLOT_W + TRAY_SLOT_GAP)
+        rects.append((sx, tray_y, TRAY_SLOT_W, TRAY_SLOT_H))
+    return rects
+
+
+def tray_status_label(r: "Relic") -> str:
+    """Human-readable status string for the second line of a tray slot."""
+    if r.state == RelicState.AVAILABLE:
+        return "AVAILABLE"
+    if r.state == RelicState.PLACED:
+        return f"PLACED ({r.tx},{r.ty})"
+    if r.state == RelicState.SHATTERED:
+        return "SHATTERED"
+    return "?"
+
+
+def tray_status_color(r: "Relic", threat_frac: float = 0.0
+                      ) -> tuple[int, int, int]:
+    """RGB tint to use for the slot border + status text.
+
+    `threat_frac` is in [0, 1] and only consulted when state == PLACED:
+    above `TRAY_THREAT_RED_FRAC` we tip into red, otherwise amber when
+    threat > 0, cyan when not threatened.
+    """
+    if r.state == RelicState.AVAILABLE:
+        return TRAY_AVAIL_COLOR
+    if r.state == RelicState.SHATTERED:
+        return TRAY_SHATTERED_COLOR
+    if r.state == RelicState.PLACED:
+        if threat_frac <= 0.0:
+            return TRAY_PLACED_COLOR
+        if threat_frac >= TRAY_THREAT_RED_FRAC:
+            return TRAY_SHATTERED_COLOR
+        return TRAY_THREAT_COLOR
+    return HUD_DIM
+
+
+def threat_fraction(r: "Relic", shatter_time: float) -> float:
+    """Clamp threat_timer / shatter_time to [0, 1]. AVAILABLE and
+    SHATTERED relics are always at 0 - their threat timer is meaningless
+    (AVAILABLE has never been threatened; SHATTERED is already gone)."""
+    if r.state != RelicState.PLACED:
+        return 0.0
+    if shatter_time <= 0.0:
+        return 0.0
+    return max(0.0, min(1.0, r.threat_timer / shatter_time))
+
+
 class HUD:
     def __init__(self):
         self.font_pop    = pygame.font.SysFont("consolas,menlo,monaco,monospace", 22, bold=True)
@@ -45,6 +139,10 @@ class HUD:
         self.font_small  = pygame.font.SysFont("consolas,menlo,monaco,monospace", 11)
         self.font_chip   = pygame.font.SysFont("consolas,menlo,monaco,monospace", 13, bold=True)
         self.font_log    = pygame.font.SysFont("consolas,menlo,monaco,monospace", 13, italic=True)
+        # Tray glyph + skull-X caches are built lazily on first draw so the
+        # HUD can be constructed before pygame.display is fully ready.
+        self._tray_glyph_cache: dict[int, pygame.Surface] = {}
+        self._tray_skull_x: Optional[pygame.Surface] = None
 
     def draw(self, screen: pygame.Surface, manager: CitizenManager,
               belief=None, powers=None, sim_t: float = 0.0,
@@ -161,6 +259,231 @@ class HUD:
         if powers is not None and powers.scripture_log:
             self._draw_scripture_log(screen, powers, sim_t)
 
+    # -- PR3 step 10: relic mode indicator ---------------------------------
+
+    def draw_relic_mode_chip(self, screen: pygame.Surface,
+                              label: str,
+                              accent: tuple[int, int, int] = None) -> None:
+        """Floating chip naming the active relic mode + slot.
+
+        Sits just above the existing bottom-left HUD box. Called from
+        main.py only when `relic_input` is not None. The accent colour
+        defaults to the global HUD_ACCENT (cyan) but can be overridden
+        per-mode (e.g. amber for MOVE, red-ish for RETRIEVE).
+        """
+        if accent is None:
+            accent = HUD_ACCENT
+        pad_x, pad_y = 10, 5
+        text_surf = self.font_chip.render(label, True, accent)
+        chip_w = text_surf.get_width() + pad_x * 2
+        chip_h = text_surf.get_height() + pad_y * 2
+        # Coords: bottom-left, just above the HUD box (which sits at
+        # screen_h - 168).
+        cx = 8
+        cy = screen.get_height() - 168 - chip_h - 6
+        bg = pygame.Surface((chip_w, chip_h), pygame.SRCALPHA)
+        bg.fill((10, 10, 16, 220))
+        screen.blit(bg, (cx, cy))
+        pygame.draw.rect(screen, accent, (cx, cy, chip_w, chip_h), width=1)
+        screen.blit(text_surf, (cx + pad_x, cy + pad_y))
+
+    # -- PR3 step 8: relic tray ---------------------------------------------
+
+    def blit_relic_tray(self, screen: pygame.Surface,
+                         relics, sim_t: float,
+                         shatter_time: float,
+                         mouse_pos: Optional[tuple[int, int]] = None):
+        """Display-only tray (`Densitas_relics.md` section 5).
+
+        Bottom-right corner, 3 horizontal slots showing the player's
+        relics. Each slot renders glyph + name + status + (when PLACED)
+        an age/threat bar; SHATTERED slots show a skull-X icon and
+        struck-through name. Tooltips appear when `mouse_pos` is inside
+        a slot.
+
+        Returns a list of `(rect, relic)` pairs so callers (`main.py`
+        eventually, PR3 step 9 specifically) can route click-to-reopen
+        on SHATTERED slots without re-deriving the geometry.
+
+        `relics` may be longer than 3; the tray renders all of them
+        in order, which for T0 == initial_count == 3.
+        """
+        if not relics:
+            return []
+        self._ensure_tray_assets()
+        sw, sh = screen.get_width(), screen.get_height()
+        rects = tray_slot_rects(sw, sh, n_slots=len(relics))
+        result = []
+        for r, (sx, sy, sw_slot, sh_slot) in zip(relics, rects):
+            frac = threat_fraction(r, shatter_time)
+            border = tray_status_color(r, frac)
+            slot_rect = pygame.Rect(sx, sy, sw_slot, sh_slot)
+
+            # Background panel
+            bg = pygame.Surface((sw_slot, sh_slot), pygame.SRCALPHA)
+            bg.fill(TRAY_BG_COLOR)
+            screen.blit(bg, (sx, sy))
+            pygame.draw.rect(screen, border, slot_rect, width=1)
+
+            # Glyph
+            self._blit_tray_glyph(screen, r, sx + 6, sy + 6)
+
+            # Name (struck-through when SHATTERED)
+            name_color = (
+                TRAY_NAME_STRUCK_COLOR
+                if r.state == RelicState.SHATTERED
+                else TRAY_NAME_COLOR
+            )
+            name_surf = self.font_label.render(r.name, True, name_color)
+            screen.blit(name_surf, (sx + 34, sy + 8))
+            if r.state == RelicState.SHATTERED:
+                # Strike-through line through the middle of the name surf.
+                line_y = sy + 8 + name_surf.get_height() // 2
+                pygame.draw.line(
+                    screen, TRAY_NAME_STRUCK_COLOR,
+                    (sx + 34, line_y),
+                    (sx + 34 + name_surf.get_width(), line_y),
+                    1,
+                )
+
+            # Status line
+            status = tray_status_label(r)
+            status_surf = self.font_small.render(status, True, border)
+            screen.blit(status_surf, (sx + 34, sy + 24))
+
+            # Threat / age bar (PLACED only)
+            if r.state == RelicState.PLACED:
+                bar_x = sx + 34
+                bar_y = sy + 42
+                bar_w = 68
+                bar_h = 4
+                pygame.draw.rect(screen, (40, 40, 50),
+                                  (bar_x, bar_y, bar_w, bar_h))
+                fill_color = (
+                    TRAY_SHATTERED_COLOR
+                    if frac >= TRAY_THREAT_RED_FRAC
+                    else (TRAY_THREAT_COLOR if frac > 0.0 else TRAY_PLACED_COLOR)
+                )
+                # When not threatened we show a thin age tick (last 30 s of
+                # placement). When threatened we show the threat fraction.
+                if frac > 0.0:
+                    fill_w = max(1, int(bar_w * frac))
+                else:
+                    age = max(0.0, sim_t - r.placed_at)
+                    # Saturate at 30 sim_sec (the place_cooldown / fade-in
+                    # window). After that the tick stays full and dim.
+                    age_frac = max(0.0, min(1.0, age / 30.0))
+                    fill_w = max(0, int(bar_w * age_frac))
+                if fill_w > 0:
+                    pygame.draw.rect(screen, fill_color,
+                                      (bar_x, bar_y, fill_w, bar_h))
+                # Threat seconds numeric overlay (right-aligned of bar)
+                if frac > 0.0:
+                    remain = max(0.0, shatter_time - r.threat_timer)
+                    num = self.font_small.render(
+                        f"{remain:.1f}s", True, fill_color,
+                    )
+                    screen.blit(num, (sx + sw_slot - num.get_width() - 6,
+                                       sy + 38))
+
+            result.append((slot_rect, r))
+
+            # Hover tooltip
+            if mouse_pos is not None and slot_rect.collidepoint(mouse_pos):
+                self._draw_tray_tooltip(screen, r, mouse_pos)
+
+        return result
+
+    def _blit_tray_glyph(self, screen: pygame.Surface, r,
+                          gx: int, gy: int) -> None:
+        """Pick the right cached icon for `r` and blit it at (gx, gy)."""
+        if r.state == RelicState.SHATTERED:
+            if self._tray_skull_x is not None:
+                screen.blit(self._tray_skull_x, (gx, gy))
+            return
+        sprite = self._tray_glyph_cache.get(int(r.faction))
+        if sprite is None:
+            return
+        if r.state == RelicState.PLACED:
+            # Desaturate by alpha drop - the cheap way to say "in use".
+            ghost = sprite.copy()
+            ghost.set_alpha(180)
+            screen.blit(ghost, (gx, gy))
+        else:
+            screen.blit(sprite, (gx, gy))
+
+    def _draw_tray_tooltip(self, screen: pygame.Surface, r,
+                            mouse_pos: tuple[int, int]) -> None:
+        """One-line tooltip beneath the cursor. Hint matches the spec:
+        AVAILABLE -> 'Press R to place.'; SHATTERED -> 'Lost at (tx,ty)
+        - click to view.' (panel hookup lands with step 9).
+        PLACED gets a quieter tooltip with the tile coords.
+        """
+        if r.state == RelicState.AVAILABLE:
+            txt = "Press R to place."
+        elif r.state == RelicState.SHATTERED:
+            txt = f"Lost at ({r.tx},{r.ty}) - click to view."
+        else:
+            txt = f"Placed at ({r.tx},{r.ty})."
+        surf = self.font_small.render(txt, True, HUD_PARCH)
+        pad = 4
+        tw = surf.get_width() + pad * 2
+        th = surf.get_height() + pad * 2
+        # Anchor above the cursor so it never clips the tray itself.
+        mx, my = mouse_pos
+        tx = max(4, min(screen.get_width() - tw - 4, mx + 12))
+        ty = max(4, my - th - 8)
+        bg = pygame.Surface((tw, th), pygame.SRCALPHA)
+        bg.fill((10, 10, 16, 230))
+        screen.blit(bg, (tx, ty))
+        pygame.draw.rect(screen, HUD_DIM, (tx, ty, tw, th), width=1)
+        screen.blit(surf, (tx + pad, ty + pad))
+
+    def _ensure_tray_assets(self) -> None:
+        """Build the tray glyph + skull-X cache on first use."""
+        if not self._tray_glyph_cache:
+            native = RELIC_GLYPH_NATIVE_PX
+            target = TRAY_GLYPH_PX
+            for faction, (palette, pixels) in RELIC_GLYPHS_BY_FACTION.items():
+                surf = pygame.Surface((native, native), pygame.SRCALPHA)
+                surf.fill((0, 0, 0, 0))
+                for x, y, pal_idx in pixels:
+                    rc, gc, bc = palette[pal_idx]
+                    surf.set_at((x, y), (rc, gc, bc, 255))
+                if target != native:
+                    surf = pygame.transform.scale(surf, (target, target))
+                self._tray_glyph_cache[faction] = surf
+        if self._tray_skull_x is None:
+            self._tray_skull_x = self._build_skull_x(TRAY_GLYPH_PX)
+
+    @staticmethod
+    def _build_skull_x(size: int) -> pygame.Surface:
+        """Constant 'gone' icon: a stylised X with two thicker strokes.
+
+        Drawn once into a cached surface. Same icon for all factions/slots
+        when state is SHATTERED, per `Densitas_relics.md` section 5.
+        """
+        surf = pygame.Surface((size, size), pygame.SRCALPHA)
+        surf.fill((0, 0, 0, 0))
+        # Dimmer border ring so the icon reads as "framed" against the panel.
+        pygame.draw.rect(surf, (50, 20, 20), (0, 0, size, size), width=1)
+        # X strokes
+        pad = 4
+        pygame.draw.line(surf, SKULL_X_COLOR,
+                          (pad, pad), (size - 1 - pad, size - 1 - pad),
+                          width=3)
+        pygame.draw.line(surf, SKULL_X_COLOR,
+                          (size - 1 - pad, pad), (pad, size - 1 - pad),
+                          width=3)
+        # Single darker overstroke down each diagonal for the etched look.
+        pygame.draw.line(surf, (90, 20, 20),
+                          (pad, pad), (size - 1 - pad, size - 1 - pad),
+                          width=1)
+        pygame.draw.line(surf, (90, 20, 20),
+                          (size - 1 - pad, pad), (pad, size - 1 - pad),
+                          width=1)
+        return surf
+
     def _draw_cooldown_row(self, screen, origin, tier_idx, powers,
                             active_mode: Optional[int]) -> None:
         """7 small icons, one per power kind. Tier-locked = dim grey.
@@ -250,7 +573,7 @@ class HUD:
             oy += line_h + 2
 
     @staticmethod
-    def _next_threshold(tier_idx: int) -> int | None:
+    def _next_threshold(tier_idx: int):
         if tier_idx >= len(TIERS):
             return None
         return TIERS[tier_idx][1]
