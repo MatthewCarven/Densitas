@@ -380,3 +380,53 @@ Next session: PR3 step 2 - belief field _scatter_relics + amplitude
 fade-in. Spec is in `Densitas_relics.md` section 7. The data model
 lands the `placed_at` / `amplitude` / `place_cooldown` plumbing that
 step 2 will consume.
+
+---
+
+## 2026-05-22 - PR3 step 2: belief contribution via `_scatter_relics`
+
+Builds directly on step 1's data model (`bafb315`). Each PLACED relic
+now contributes `amplitude * min(1.0, (sim_t - placed_at) / place_cooldown)`
+to its belief cell. Visible payoff: toggle the heatmap (B key) on a fresh
+game and watch the cells under the six seeded relics brighten over the
+first 30 sim-seconds.
+
+Changes:
+
+- `densitas/belief.py` - `BeliefField.__init__` adds `relic_cfg=None`
+  kwarg (Optional[RelicConfig]); `recompute()` widens to
+  `(citizens, relics=None, sim_t=0.0)` keeping the old signature
+  back-compatible; new `_scatter_relics(relics, sim_t)` does the
+  per-tile fade-in scatter. Scatter happens BEFORE blur so relic
+  amplitude bleeds into neighbouring cells, producing the heatmap
+  halo. PLACED-only filter; SHATTERED and AVAILABLE skip. Defensive
+  `elapsed<=0` and `cd<=0` guards.
+- `densitas/main.py` - BeliefField construction adds
+  `relic_cfg=cfg.powers.relic`. Both `recompute()` call sites pass
+  `relics=relic_mgr.relics, sim_t=...`. Startup recompute uses
+  `sim_t=0.0` so seeded relics start at zero contribution (fade-in
+  begins on the next tick - per spec section 7).
+- `tests/test_relics.py` - 9 new tests appended: spec #5
+  (full amplitude after cooldown), #6 (half amplitude at half
+  cooldown), #6b (clamp at 1.0), #10 (SHATTERED -> 0), plus smoke
+  (just-placed elapsed=0 -> 0, AVAILABLE -> 0, signature
+  back-compat, two relics in distinct cells, no-cfg skip).
+
+Tests: **122 / 122 pass** headlessly (89 original + 24 step-1 +
+9 step-2), `SDL_VIDEODRIVER=dummy`, `--assert=plain`, fresh cache.
+Sandbox smoke-run on default-seed world confirms belief peak
+rising 0.58 -> 2.51 -> 4.60 across `sim_t = 0 / 15 / 30` (the
+expected linear trend; absolute numbers smaller than the raw 20.0
+amplitude because blur_passes=2 smears the contribution).
+
+Not in this commit (deferred):
+- Citizen attractor wiring (PR3 step 3)
+- Shatter rule + summary population in tick() (PR3 step 4)
+- R / Shift+R input modes (PR3 step 10)
+- HUD tray + summary panel (PR3 steps 8-9)
+
+**Next session:** PR3 step 3 - `CitizenManager.sync_attractors_from_relics`
+and `_pick_wander_target` hook so wandering citizens drift toward
+PLACED relics ~40% of picks. Spec is in `Densitas_relics.md`
+section 8. Hunger-driven FORAGE state must still override (that's
+spec test #11, also lands in step 3).

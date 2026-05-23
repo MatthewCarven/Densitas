@@ -123,8 +123,13 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"Allocating belief field ({cfg.belief.grid_w}x{cfg.belief.grid_h})...")
     belief = BeliefField(cfg.belief, world,
-                          dying_duration=cfg.citizen.dying_duration)
-    belief.recompute(citizen_mgr.citizens)
+                          dying_duration=cfg.citizen.dying_duration,
+                          relic_cfg=cfg.powers.relic)
+    # PR3 step 2: pass the seeded relics into the initial recompute so
+    # the startup belief readout reflects them too. sim_t=0.0 means the
+    # six fresh placements contribute exactly 0 - fade-in starts on the
+    # NEXT recompute. That's intentional per `Densitas_relics.md` section 7.
+    belief.recompute(citizen_mgr.citizens, relics=relic_mgr.relics, sim_t=0.0)
     print(f"  initial belief total: f0={belief.total(0):.2f}, f1={belief.total(1):.2f}")
 
     print("Loading rhetoric pool...")
@@ -343,7 +348,14 @@ def main(argv: list[str] | None = None) -> int:
             )
             food.recompute(tick_dt, effects=power_system.effects)
             citizen_mgr.tick(tick_dt, world, food)
-            belief.recompute(citizen_mgr.citizens)
+            # PR3 step 2: pass the live relic list + current sim_t so
+            # each PLACED relic contributes amplitude * min(1.0,
+            # (sim_t - placed_at) / place_cooldown) to its belief cell.
+            belief.recompute(
+                citizen_mgr.citizens,
+                relics=relic_mgr.relics,
+                sim_t=sim_time,
+            )
             sim_accumulator -= tick_dt
             sim_time += tick_dt
 

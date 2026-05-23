@@ -367,3 +367,210 @@ def test_shatter_at_stub_returns_empty():
     assert out == []
     # The relic itself is unaffected by the stub.
     assert mgr.get(0, 0).state == RelicState.PLACED
+
+# ===========================================================================
+# PR3 step 2: belief contribution via BeliefField._scatter_relics.
+# Tests #5, #6, #10 from `Densitas_relics.md` section 11, plus smoke.
+# ===========================================================================
+
+from densitas.config import BeliefConfig
+from densitas.belief import BeliefField
+
+
+def _make_belief_cfg(blur_passes: int = 0, blur_radius: int = 1,
+                     grid_w: int = 32, grid_h: int = 24,
+                     amplitude: float = 1.0) -> BeliefConfig:
+    """BeliefConfig with blur disabled so tests can assert exact per-cell
+    contributions. The default `amplitude` here is for the *citizen*
+    splat (irrelevant for these tests since we pass no citizens); the
+    relic amplitude lives on RelicConfig and arrives via relic_cfg.
+
+    Mirrors tests/test_belief.py::_make_cfg but defaults blur_passes=0.
+    """
+    return BeliefConfig(
+        grid_w=grid_w,
+        grid_h=grid_h,
+        amplitude=amplitude,
+        blur_passes=blur_passes,
+        blur_radius=blur_radius,
+        recompute_hz=5,
+        overlay_alpha_max=180,
+    )
+
+
+def _make_belief_field(world: World, relic_cfg=None,
+                        blur_passes: int = 0) -> BeliefField:
+    """BeliefField wired for relic contribution. blur_passes=0 is the
+    default so tests assert raw scatter values; pass blur_passes>0 if
+    you want to exercise the bleed."""
+    return BeliefField(
+        _make_belief_cfg(blur_passes=blur_passes),
+        world,
+        relic_cfg=relic_cfg,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Spec test #5: full amplitude after place_cooldown elapses.
+# ---------------------------------------------------------------------------
+
+def test_05_relic_contributes_full_amplitude_after_cooldown():
+    """After place_cooldown sim-seconds, the field at the relic's cell
+    equals exactly `amplitude`. No blur, no citizens, no other relics
+    - so the contribution lands cleanly in one cell."""
+    cfg = _make_relic_cfg()       # amplitude=20, place_cooldown=30
+    mgr = RelicManager(cfg, n_factions=2)
+    w = _make_world(width=64, height=48)
+    mgr.place(0, 0, tx=10, ty=8, world=w, sim_t=0.0)
+
+    bf = _make_belief_field(w, relic_cfg=cfg)
+    # sim_t exactly one cooldown after placement -> weight = amplitude.
+    bf.recompute(citizens=[], relics=mgr.relics, sim_t=30.0)
+
+    # Map the relic's world tile to its belief cell. With width=64,
+    # grid_w=32: tiles_per_cell_x = 2 -> tx=10 maps to cx=5. Same for y.
+    tpcx = bf.tiles_per_cell_x
+    tpcy = bf.tiles_per_cell_y
+    cx, cy = 10 // tpcx, 8 // tpcy
+    assert bf.field[0, cy, cx] == pytest.approx(cfg.amplitude)
+    # Other faction should not have any contribution at this cell.
+    assert bf.field[1, cy, cx] == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# Spec test #6: linear fade-in - half cooldown gives half amplitude.
+# ---------------------------------------------------------------------------
+
+def test_06_relic_fade_in_is_linear_during_cooldown():
+    """At sim_t = 0.5 * cooldown after place, weight = 0.5 * amplitude."""
+    cfg = _make_relic_cfg()
+    mgr = RelicManager(cfg, n_factions=2)
+    w = _make_world(width=64, height=48)
+    mgr.place(0, 0, tx=10, ty=8, world=w, sim_t=0.0)
+
+    bf = _make_belief_field(w, relic_cfg=cfg)
+    bf.recompute(citizens=[], relics=mgr.relics,
+                  sim_t=cfg.place_cooldown * 0.5)
+
+    tpcx = bf.tiles_per_cell_x
+    tpcy = bf.tiles_per_cell_y
+    cx, cy = 10 // tpcx, 8 // tpcy
+    assert bf.field[0, cy, cx] == pytest.approx(cfg.amplitude * 0.5)
+
+
+def test_06b_relic_fade_in_clamps_at_one():
+    """After the cooldown, contribution stays at amplitude - the
+    `min(1.0, elapsed/cd)` clamp means longer elapsed times don't keep
+    growing the weight."""
+    cfg = _make_relic_cfg()
+    mgr = RelicManager(cfg, n_factions=2)
+    w = _make_world(width=64, height=48)
+    mgr.place(0, 0, tx=10, ty=8, world=w, sim_t=0.0)
+
+    bf = _make_belief_field(w, relic_cfg=cfg)
+    # 5x the cooldown.
+    bf.recompute(citizens=[], relics=mgr.relics,
+                  sim_t=cfg.place_cooldown * 5.0)
+
+    tpcx = bf.tiles_per_cell_x
+    tpcy = bf.tiles_per_cell_y
+    cx, cy = 10 // tpcx, 8 // tpcy
+    assert bf.field[0, cy, cx] == pytest.approx(cfg.amplitude)
+
+
+# ---------------------------------------------------------------------------
+# Spec test #10: SHATTERED contributes nothing.
+# ---------------------------------------------------------------------------
+
+def test_10_shattered_relic_does_not_contribute():
+    """The shatter ceremony's punch comes from the belief vanishing.
+    Simulate by direct state mutation (PR3 step 4 will fire shatter
+    through the tick loop)."""
+    cfg = _make_relic_cfg()
+    mgr = RelicManager(cfg, n_factions=2)
+    w = _make_world(width=64, height=48)
+    mgr.place(0, 0, tx=10, ty=8, world=w, sim_t=0.0)
+    bf = _make_belief_field(w, relic_cfg=cfg)
+
+    # First: full amplitude after cooldown.
+    bf.recompute(citizens=[], relics=mgr.relics, sim_t=30.0)
+    tpcx, tpcy = bf.tiles_per_cell_x, bf.tiles_per_cell_y
+    cx, cy = 10 // tpcx, 8 // tpcy
+    assert bf.field[0, cy, cx] == pytest.approx(cfg.amplitude)
+
+    # Now shatter.
+    mgr.get(0, 0).state = RelicState.SHATTERED
+    bf.recompute(citizens=[], relics=mgr.relics, sim_t=31.0)
+    assert bf.field[0, cy, cx] == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# Smoke tests
+# ---------------------------------------------------------------------------
+
+def test_relic_just_placed_contributes_zero_one_tick():
+    """elapsed == 0 -> weight 0. Fade-in starts the next tick."""
+    cfg = _make_relic_cfg()
+    mgr = RelicManager(cfg, n_factions=2)
+    w = _make_world(width=64, height=48)
+    mgr.place(0, 0, tx=10, ty=8, world=w, sim_t=7.5)
+
+    bf = _make_belief_field(w, relic_cfg=cfg)
+    bf.recompute(citizens=[], relics=mgr.relics, sim_t=7.5)  # same instant
+
+    tpcx, tpcy = bf.tiles_per_cell_x, bf.tiles_per_cell_y
+    cx, cy = 10 // tpcx, 8 // tpcy
+    assert bf.field[0, cy, cx] == pytest.approx(0.0)
+
+
+def test_available_relic_does_not_contribute():
+    """AVAILABLE = no on-map presence -> no belief contribution."""
+    cfg = _make_relic_cfg()
+    mgr = RelicManager(cfg, n_factions=2)
+    w = _make_world(width=64, height=48)
+    bf = _make_belief_field(w, relic_cfg=cfg)
+
+    bf.recompute(citizens=[], relics=mgr.relics, sim_t=100.0)
+    assert bf.field.sum() == pytest.approx(0.0)
+
+
+def test_relics_recompute_signature_back_compatible():
+    """The old recompute(citizens) signature still works. Critical
+    for tests/test_belief.py and any caller that doesn't yet pass
+    relics through."""
+    cfg = _make_relic_cfg()
+    w = _make_world(width=64, height=48)
+    bf = _make_belief_field(w, relic_cfg=cfg)
+    # No relics, no sim_t - should not raise and field stays zero.
+    bf.recompute(citizens=[])
+    assert bf.field.sum() == pytest.approx(0.0)
+
+
+def test_two_placed_relics_scatter_to_distinct_cells():
+    """Multiple PLACED relics each contribute independently."""
+    cfg = _make_relic_cfg()
+    mgr = RelicManager(cfg, n_factions=2)
+    w = _make_world(width=64, height=48)
+    # Place two same-faction relics far apart so they land in different cells.
+    mgr.place(0, 0, tx=5, ty=5, world=w, sim_t=0.0)
+    mgr.place(0, 1, tx=50, ty=40, world=w, sim_t=0.0)
+    bf = _make_belief_field(w, relic_cfg=cfg)
+    bf.recompute(citizens=[], relics=mgr.relics, sim_t=30.0)
+
+    tpcx, tpcy = bf.tiles_per_cell_x, bf.tiles_per_cell_y
+    assert bf.field[0, 5 // tpcy, 5 // tpcx] == pytest.approx(cfg.amplitude)
+    assert bf.field[0, 40 // tpcy, 50 // tpcx] == pytest.approx(cfg.amplitude)
+
+
+def test_recompute_without_relic_cfg_skips_scatter():
+    """If BeliefField was built without a relic_cfg, passing relics=
+    into recompute is a no-op (no AttributeError)."""
+    cfg = _make_relic_cfg()
+    mgr = RelicManager(cfg, n_factions=2)
+    w = _make_world(width=64, height=48)
+    mgr.place(0, 0, tx=10, ty=8, world=w, sim_t=0.0)
+
+    bf = _make_belief_field(w, relic_cfg=None)
+    bf.recompute(citizens=[], relics=mgr.relics, sim_t=30.0)
+    # No crash. Field stays zero because the scatter was skipped.
+    assert bf.field.sum() == pytest.approx(0.0)

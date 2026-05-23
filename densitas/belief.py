@@ -18,13 +18,19 @@ belief, as Matthew put it.
 Render path is in render.py; this module is render-agnostic.
 """
 from __future__ import annotations
-from typing import Iterable
+from typing import Iterable, Optional, TYPE_CHECKING
 
 import numpy as np
 
-from .config import BeliefConfig
+from .config import BeliefConfig, RelicConfig
 from .citizen import Citizen, CitizenState
 from .world import World
+
+if TYPE_CHECKING:
+    from .relics import Relic
+# Runtime import for the state enum - no cycle, relics.py only
+# depends on config + world.
+from .relics import RelicState
 
 
 # Faction count is fixed at 2 for P2 (Open Eye + Maw). When more gods exist,
@@ -41,11 +47,19 @@ class BeliefField:
     """
 
     def __init__(self, cfg: BeliefConfig, world: World, n_factions: int = N_FACTIONS,
-                 dying_duration: float = 2.0):
+                 dying_duration: float = 2.0,
+                 relic_cfg: Optional[RelicConfig] = None):
         """`dying_duration` matches citizen.cfg so the DYING fade reads correctly.
         Defaulted to 2.0 (P1.5 value) for tests that don't pass a citizen cfg.
+
+        `relic_cfg` is the PR3-step-2 hook. When provided, callers can pass
+        `relics=` into `recompute()` and each PLACED relic contributes
+        `amplitude * min(1.0, (sim_t - placed_at) / place_cooldown)` to its
+        belief cell. None is fine for tests that don't exercise relics -
+        recompute(relics=None) skips the scatter entirely.
         """
         self.cfg = cfg
+        self.relic_cfg = relic_cfg
         self.world_w = world.width
         self.world_h = world.height
         self.n_factions = n_factions
@@ -64,9 +78,24 @@ class BeliefField:
 
     # -- recompute ----------------------------------------------------------
 
-    def recompute(self, citizens: Iterable[Citizen]) -> None:
+    def recompute(self, citizens: Iterable[Citizen],
+                   relics: Optional[Iterable["Relic"]] = None,
+                   sim_t: float = 0.0) -> None:
+        """Rebuild the per-faction belief field from scratch.
+
+        Order is significant: citizens scatter first, then PLACED relics
+        add their fade-in amplitude (PR3 step 2), then the blur smears
+        the whole field. Relics scatter BEFORE blur so their amplitude
+        bleeds into neighbouring cells - that's the whole point of the
+        'attract halo' visual on the heatmap.
+
+        `relics=None` (the default) preserves pre-PR3 behaviour for
+        every existing caller and test fixture.
+        """
         self.field.fill(0.0)
         self._scatter(citizens)
+        if relics is not None and self.relic_cfg is not None:
+            self._scatter_relics(relics, sim_t)
         for _ in range(self.cfg.blur_passes):
             self._box_blur(self.cfg.blur_radius)
         self.version += 1
@@ -98,6 +127,50 @@ class BeliefField:
             cy = int(c.y) // tpcy
             if 0 <= cx < gw and 0 <= cy < gh and 0 <= c.faction < self.n_factions:
                 field[c.faction, cy, cx] += weight
+
+    def _scatter_relics(self, relics: Iterable["Relic"], sim_t: float) -> None:
+        """Scatter PLACED relics' fade-in amplitude into the per-faction grid.
+
+        Per `Densitas_relics.md` section 7:
+          weight = amplitude * min(1.0, (sim_t - placed_at) / place_cooldown)
+
+        Three consequences worth understanding when reading downstream code:
+          * A just-placed relic (elapsed == 0) contributes 0 for one tick.
+            The fade-in starts on the next recompute after placed_at.
+          * After `place_cooldown` sim-seconds, contribution is exactly
+            `amplitude` (20.0 by default).
+          * SHATTERED relics contribute nothing - their belief disappears
+            the instant the slot transitions, which is what makes a shatter
+            hurt. AVAILABLE relics are skipped too (no PLACED tile to scatter at).
+
+        `self.relic_cfg` is guaranteed non-None by the recompute() guard;
+        callers that don't construct BeliefField with relic_cfg can't reach
+        this method.
+        """
+        amp = float(self.relic_cfg.amplitude)
+        cd = float(self.relic_cfg.place_cooldown)
+        if cd <= 0.0:
+            # Degenerate config - treat any PLACED relic as fully ramped up.
+            # Avoids a div-by-zero in min(1.0, elapsed / cd).
+            cd = 1e-9
+        tpcx = self.tiles_per_cell_x
+        tpcy = self.tiles_per_cell_y
+        gw = self.grid_w
+        gh = self.grid_h
+        field = self.field
+        for r in relics:
+            if r.state != RelicState.PLACED:
+                continue
+            elapsed = sim_t - r.placed_at
+            if elapsed <= 0.0:
+                # Defensive: also covers sim_t < placed_at clock weirdness.
+                continue
+            weight = amp * min(1.0, elapsed / cd)
+            cx = int(r.tx) // tpcx
+            cy = int(r.ty) // tpcy
+            if 0 <= cx < gw and 0 <= cy < gh \
+                    and 0 <= r.faction < self.n_factions:
+                field[r.faction, cy, cx] += weight
 
     def _box_blur(self, radius: int) -> None:
         if radius < 1:
