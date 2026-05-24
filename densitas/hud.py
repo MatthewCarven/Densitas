@@ -49,6 +49,101 @@ SKULL_X_COLOR          = (160, 50, 50)
 # Threshold at which the threat bar tips amber -> red (last 30% of the timer).
 TRAY_THREAT_RED_FRAC: float = 0.7
 
+# ---- shatter summary panel (PR3 step 9) ------------------------------------
+# Per Densitas_relics.md section 6. The panel slides in from the right edge,
+# holds for 10 sim_sec showing the ShatterSummary, then slides out. Manual
+# re-opens (from clicking the SHATTERED tray slot per section 6.1) skip the
+# slide-in and stay until clicked.
+#
+# Implementation note: spec section 6 nominally uses 0.4 *wall* seconds for
+# the slide and 10 *sim* seconds for the hold. We use sim_t throughout for
+# consistency with the rest of the engine; at normal speed the two are
+# equivalent and using a single clock keeps the helpers pure and testable.
+
+PANEL_W: int                    = 320
+PANEL_H: int                    = 280
+PANEL_SLIDE_DURATION: float     = 0.4    # sim_sec for slide in/out
+PANEL_HOLD_DURATION: float      = 10.0   # sim_sec for hold (auto only)
+PANEL_OPEN_DELAY: float         = 1.0    # sim_sec from shatter to auto-panel
+PANEL_MARGIN: int               = 8
+PANEL_BG               = (244, 233, 206)  # #f4e9ce parchment
+PANEL_BORDER           = (190, 160, 70)   # gold
+PANEL_TEXT             = (50, 35, 20)
+PANEL_DIM              = (110, 90, 60)
+PANEL_HEADING          = (140, 35, 20)    # deep red for "A RELIC HAS BROKEN"
+PANEL_RATIO_BAD        = (170, 40, 40)
+
+
+PANEL_PHASE_SLIDE_IN  = "sliding_in"
+PANEL_PHASE_HOLDING   = "holding"
+PANEL_PHASE_SLIDE_OUT = "sliding_out"
+PANEL_PHASE_MANUAL    = "holding_manual"
+PANEL_PHASE_DONE      = "done"
+
+
+def ease_out_cubic(t: float) -> float:
+    """Standard cubic ease-out, t in [0, 1]. Pure."""
+    if t <= 0.0:
+        return 0.0
+    if t >= 1.0:
+        return 1.0
+    return 1.0 - (1.0 - t) ** 3
+
+
+def panel_phase(opened_at: float, sim_t: float, manual: bool
+                 ) -> tuple[str, float]:
+    """Decompose elapsed time into (phase_name, progress).
+
+    progress is in [0, 1] for sliding_in / sliding_out, [0, hold_duration]
+    for holding (number of sim_sec elapsed in hold phase), unbounded for
+    holding_manual, and 0.0 for done.
+
+    For manual opens, slide-in is skipped entirely and the panel sits in
+    PANEL_PHASE_MANUAL until something flips it (a click dismiss in the
+    main loop clears the state outright).
+    """
+    age = sim_t - opened_at
+    if age < 0.0:
+        # Defensive: future-dated state, treat as just-opened.
+        age = 0.0
+    if manual:
+        return (PANEL_PHASE_MANUAL, age)
+    if age < PANEL_SLIDE_DURATION:
+        return (PANEL_PHASE_SLIDE_IN, age / PANEL_SLIDE_DURATION)
+    hold_age = age - PANEL_SLIDE_DURATION
+    if hold_age < PANEL_HOLD_DURATION:
+        return (PANEL_PHASE_HOLDING, hold_age)
+    out_age = hold_age - PANEL_HOLD_DURATION
+    if out_age < PANEL_SLIDE_DURATION:
+        return (PANEL_PHASE_SLIDE_OUT, out_age / PANEL_SLIDE_DURATION)
+    return (PANEL_PHASE_DONE, 0.0)
+
+
+def panel_slide_offset(phase: str, progress: float) -> int:
+    """Pixel offset to add to the panel's x position. 0 = fully on
+    screen at its anchor, +PANEL_W = fully off-screen to the right.
+    """
+    if phase == PANEL_PHASE_SLIDE_IN:
+        eased = ease_out_cubic(progress)
+        return int(round(PANEL_W * (1.0 - eased)))
+    if phase == PANEL_PHASE_SLIDE_OUT:
+        # Slide-out is linear; the player wants it out promptly.
+        return int(round(PANEL_W * max(0.0, min(1.0, progress))))
+    if phase == PANEL_PHASE_HOLDING or phase == PANEL_PHASE_MANUAL:
+        return 0
+    return PANEL_W
+
+
+def panel_rect(screen_w: int, screen_h: int, slide_offset: int):
+    """Return (x, y, w, h) of the panel given the current slide offset.
+    Anchored against the right edge with PANEL_MARGIN, vertically
+    centred. Tests use this without pygame; the renderer wraps it in a
+    pygame.Rect at the call site.
+    """
+    x = screen_w - PANEL_W - PANEL_MARGIN + slide_offset
+    y = (screen_h - PANEL_H) // 2
+    return (x, y, PANEL_W, PANEL_H)
+
 # Cooldown row - first letter of each power for the icon labels.
 # Kind values mirror PowerKind in powers.py to avoid an import cycle.
 COOLDOWN_ICONS: tuple[tuple[int, int, str, tuple[int, int, int]], ...] = (
@@ -393,6 +488,142 @@ class HUD:
                 self._draw_tray_tooltip(screen, r, mouse_pos)
 
         return result
+
+    # -- PR3 step 9: shatter summary panel ----------------------------------
+
+    def blit_shatter_summary_panel(self, screen: pygame.Surface,
+                                     summary, opened_at: float,
+                                     sim_t: float,
+                                     manual: bool = False):
+        """Render the slide-in summary panel (Densitas_relics.md section 6).
+
+        `summary` is a ShatterSummary (duck-typed: needs .name, .tx, .ty,
+        .sim_t, .local_belief_player / _rival, .player_citizens_within_8 /
+        .rival_citizens_within_8, .time_placed_total, .times_moved).
+        `opened_at` is the sim_t when this panel started; `sim_t` is now.
+        `manual` flips on for tray click-to-reopen (skips slide-in, no
+        auto-close).
+
+        Returns the current pygame.Rect for the panel, or None when the
+        animation is done (auto only; manual stays open). Main loop uses
+        this rect for click-to-dismiss collision.
+        """
+        phase, progress = panel_phase(opened_at, sim_t, manual)
+        if phase == PANEL_PHASE_DONE:
+            return None
+        offset = panel_slide_offset(phase, progress)
+        sw, sh = screen.get_width(), screen.get_height()
+        x, y, w, h = panel_rect(sw, sh, offset)
+
+        # Background card
+        card = pygame.Surface((w, h), pygame.SRCALPHA)
+        card.fill((*PANEL_BG, 245))
+        screen.blit(card, (x, y))
+        rect = pygame.Rect(x, y, w, h)
+        pygame.draw.rect(screen, PANEL_BORDER, rect, width=2)
+
+        # Heading bar
+        heading_surf = self.font_chip.render(
+            "A RELIC HAS BROKEN", True, PANEL_HEADING,
+        )
+        hx = x + (w - heading_surf.get_width()) // 2
+        hy = y + 14
+        screen.blit(heading_surf, (hx, hy))
+        # Divider rule under heading
+        pygame.draw.line(
+            screen, PANEL_BORDER,
+            (x + 16, hy + heading_surf.get_height() + 8),
+            (x + w - 16, hy + heading_surf.get_height() + 8),
+            1,
+        )
+
+        # Name (centred, slightly larger)
+        name_surf = self.font_belief.render(summary.name, True, PANEL_TEXT)
+        nx = x + (w - name_surf.get_width()) // 2
+        ny = hy + heading_surf.get_height() + 16
+        screen.blit(name_surf, (nx, ny))
+
+        # Tile + sim_t row
+        tile_surf = self.font_label.render(
+            f"Tile ({summary.tx}, {summary.ty})", True, PANEL_TEXT,
+        )
+        screen.blit(tile_surf, (x + 20, ny + name_surf.get_height() + 6))
+        simt_surf = self.font_label.render(
+            f"sim_t {summary.sim_t:.1f} s", True, PANEL_DIM,
+        )
+        screen.blit(simt_surf,
+                     (x + w - 20 - simt_surf.get_width(),
+                      ny + name_surf.get_height() + 6))
+
+        # Section: Local belief at shatter
+        sy0 = ny + name_surf.get_height() + 6 + tile_surf.get_height() + 16
+        sec_surf = self.font_label.render(
+            "Local belief at shatter", True, PANEL_DIM,
+        )
+        screen.blit(sec_surf, (x + 20, sy0))
+        y_b = sy0 + sec_surf.get_height() + 4
+        you_b_surf = self.font_label.render(
+            f"yours:   {summary.local_belief_player:6.2f}", True, PANEL_TEXT,
+        )
+        screen.blit(you_b_surf, (x + 36, y_b))
+        riv_b_surf = self.font_label.render(
+            f"rival:   {summary.local_belief_rival:6.2f}", True, PANEL_TEXT,
+        )
+        y_b2 = y_b + you_b_surf.get_height() + 2
+        screen.blit(riv_b_surf, (x + 36, y_b2))
+        # Derived ratio chip
+        ratio = (summary.local_belief_rival /
+                 max(summary.local_belief_player, 1e-3))
+        ratio_color = (
+            PANEL_RATIO_BAD if ratio >= 1.5 else PANEL_TEXT
+        )
+        ratio_surf = self.font_label.render(
+            f"ratio {ratio:.2f}x", True, ratio_color,
+        )
+        screen.blit(ratio_surf,
+                     (x + w - 20 - ratio_surf.get_width(), y_b2))
+
+        # Section: Citizens within 8 tiles
+        sy1 = y_b2 + riv_b_surf.get_height() + 14
+        sec2_surf = self.font_label.render(
+            "Citizens within 8 tiles", True, PANEL_DIM,
+        )
+        screen.blit(sec2_surf, (x + 20, sy1))
+        y_c = sy1 + sec2_surf.get_height() + 4
+        you_c_surf = self.font_label.render(
+            f"yours:   {summary.player_citizens_within_8:6d}",
+            True, PANEL_TEXT,
+        )
+        screen.blit(you_c_surf, (x + 36, y_c))
+        riv_c_surf = self.font_label.render(
+            f"rival:   {summary.rival_citizens_within_8:6d}",
+            True, PANEL_TEXT,
+        )
+        y_c2 = y_c + you_c_surf.get_height() + 2
+        screen.blit(riv_c_surf, (x + 36, y_c2))
+
+        # Footer: time placed + times moved
+        sy2 = y_c2 + riv_c_surf.get_height() + 14
+        time_surf = self.font_label.render(
+            f"Time placed:  {summary.time_placed_total:7.1f} s",
+            True, PANEL_TEXT,
+        )
+        screen.blit(time_surf, (x + 20, sy2))
+        moves_surf = self.font_label.render(
+            f"Times moved:  {summary.times_moved:7d}",
+            True, PANEL_TEXT,
+        )
+        screen.blit(moves_surf,
+                     (x + 20, sy2 + time_surf.get_height() + 2))
+
+        # Dismiss hint at the bottom
+        hint = "(click to dismiss)"
+        hint_surf = self.font_small.render(hint, True, PANEL_DIM)
+        hx2 = x + (w - hint_surf.get_width()) // 2
+        hy2 = y + h - hint_surf.get_height() - 10
+        screen.blit(hint_surf, (hx2, hy2))
+
+        return rect
 
     def _blit_tray_glyph(self, screen: pygame.Surface, r,
                           gx: int, gy: int) -> None:
