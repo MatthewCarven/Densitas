@@ -289,6 +289,17 @@ def main(argv: list[str] | None = None) -> int:
     relic_input: Optional[RelicInputState] = None
     last_relic_fail_at: float = -1.0
     last_relic_fail_reason: str = ""
+    # PR3 step 9: shatter summary panel state.
+    # pending_shatters: shatter events waiting their PANEL_OPEN_DELAY before
+    # the auto-panel appears. Each entry is (sim_t_of_shatter, summary).
+    # panel_state: tuple (summary, opened_at, manual) or None when no panel
+    # is open. tray_slot_rects_last: cache the rects returned by the most
+    # recent blit_relic_tray call so the LMB handler can route clicks to
+    # SHATTERED slots without re-deriving the geometry.
+    pending_shatters: list = []
+    panel_state: Optional[tuple] = None
+    tray_slot_rects_last: list = []
+    panel_rect_last = None
     # Brush size for bulk Raise/Lower (side length, so tile count = brush_size**2).
     # 1..4 -> 1, 4, 9, 16 tiles. Persists across mode switches; only effective
     # while active_mode is RAISE or LOWER. Modulated by +/- (top row or keypad).
@@ -372,6 +383,47 @@ def main(argv: list[str] | None = None) -> int:
                 elif event.key in POWER_KEYS:
                     active_mode = POWER_KEYS[event.key]
             elif event.type == pygame.MOUSEBUTTONDOWN:
+                # PR3 step 9: panel + SHATTERED-tray click handling. Both
+                # are gated AHEAD of relic_input / active_mode so a click
+                # on the panel or on a SHATTERED tray slot doesn't fall
+                # through to a power cast.
+                _panel_consumed = False
+                if event.button == 1 and panel_state is not None \
+                        and panel_rect_last is not None \
+                        and panel_rect_last.collidepoint(event.pos):
+                    _summary, _opened_at, _manual = panel_state
+                    if _manual:
+                        # Manual re-opens dismiss immediately on click.
+                        panel_state = None
+                    else:
+                        # Auto-panels jump to slide-out: rewind opened_at so
+                        # the next frame sees PANEL_PHASE_SLIDE_OUT phase
+                        # progress = 0. opened_at = sim_time - hold -
+                        # slide_in puts us at the very start of slide-out.
+                        from densitas.hud import (
+                            PANEL_SLIDE_DURATION, PANEL_HOLD_DURATION,
+                        )
+                        panel_state = (
+                            _summary,
+                            sim_time - PANEL_SLIDE_DURATION - PANEL_HOLD_DURATION,
+                            False,
+                        )
+                    _panel_consumed = True
+                elif event.button == 1 and tray_slot_rects_last:
+                    # Click-to-reopen on a SHATTERED tray slot.
+                    for _trect, _relic in tray_slot_rects_last:
+                        if _trect.collidepoint(event.pos) \
+                                and _relic.state == RelicState.SHATTERED \
+                                and _relic.shatter_summary is not None:
+                            panel_state = (
+                                _relic.shatter_summary,
+                                sim_time,
+                                True,    # manual
+                            )
+                            _panel_consumed = True
+                            break
+                if _panel_consumed:
+                    continue
                 if event.button == 1 and relic_input is not None:
                     # PR3 step 10: relic-mode LMB.
                     mx, my = event.pos
@@ -517,12 +569,15 @@ def main(argv: list[str] | None = None) -> int:
             )
             if _shattered:
                 # Re-sync attractors so SHATTERED relics stop pulling.
-                # Scripture / panel / animation hooks land in later
-                # PR3 steps; for now we just log to stdout so the
-                # event is visible during dev playtests.
                 citizen_mgr.sync_attractors_from_relics(
                     relic_mgr.relics, cfg.powers.relic.attract_radius,
                 )
+                # PR3 step 9: queue each shatter for the summary panel.
+                # The actual open is delayed by PANEL_OPEN_DELAY (1.0 sim_sec
+                # by default) so the on-map shatter animation (step 7) plays
+                # out before the panel slides in.
+                for _s in _shattered:
+                    pending_shatters.append((sim_time, _s))
                 for _s in _shattered:
                     print(
                         f"  [shatter @ sim_t={sim_time:.1f}] "
@@ -553,6 +608,12 @@ def main(argv: list[str] | None = None) -> int:
             _placed = [r for r in relic_mgr.relics
                        if r.state == RelicState.PLACED]
             renderer.blit_relics(screen, _placed, cam.x, cam.y, sim_time)
+        # PR3 step 7: shatter animation. Passes the FULL relic list so
+        # the renderer can pick the SHATTERED ones within the
+        # SHATTER_ANIM_DURATION window itself; no-op past it.
+        renderer.blit_shatter_animations(
+            screen, relic_mgr.relics, cam.x, cam.y, sim_time,
+        )
         renderer.blit_citizens(screen, citizen_mgr.iter_for_render(), cam.x, cam.y, sim_time)
 
         # P3-Queue: queued-cast chevrons sit above citizens, below preview.
@@ -607,14 +668,35 @@ def main(argv: list[str] | None = None) -> int:
                   powers=power_system, sim_t=sim_time,
                   active_mode=(int(active_mode) if active_mode is not None else None))
         # PR3 step 8: relic tray, bottom-right corner. Display-only.
+        # The returned (Rect, Relic) pairs feed step 9's click-to-reopen.
         _tray_mouse = pygame.mouse.get_pos() if pygame.mouse.get_focused() else None
-        hud.blit_relic_tray(
+        tray_slot_rects_last = hud.blit_relic_tray(
             screen,
             relic_mgr.for_faction(0),
             sim_t=sim_time,
             shatter_time=cfg.powers.relic.shatter_time,
             mouse_pos=_tray_mouse,
         )
+        # PR3 step 9: advance the pending-shatter queue. If no panel is
+        # open and the oldest pending shatter is older than the
+        # PANEL_OPEN_DELAY (1.0 sim_sec by default - matches the on-map
+        # animation's 1.0 sec duration so the panel opens as the relic
+        # finishes fading), pop and open the auto panel.
+        from densitas.hud import PANEL_OPEN_DELAY as _PANEL_OPEN_DELAY
+        if panel_state is None and pending_shatters:
+            if sim_time - pending_shatters[0][0] >= _PANEL_OPEN_DELAY:
+                _, _next_summary = pending_shatters.pop(0)
+                panel_state = (_next_summary, sim_time, False)
+        # Render the panel and capture its rect for click-to-dismiss.
+        panel_rect_last = None
+        if panel_state is not None:
+            _summary, _opened_at, _manual = panel_state
+            panel_rect_last = hud.blit_shatter_summary_panel(
+                screen, _summary, _opened_at, sim_time, manual=_manual,
+            )
+            if panel_rect_last is None:
+                # phase 'done' -> auto-panel has finished slide-out.
+                panel_state = None
         # PR3 step 10: relic-mode chip above the HUD box.
         if relic_input is not None:
             _accent = (

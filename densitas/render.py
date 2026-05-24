@@ -54,6 +54,113 @@ CITIZEN_H = 16
 # constant moves into [render.relic] config.
 RELIC_SPRITE_SIZE_PX: int = 32
 
+# ---- shatter animation (PR3 step 7) ----------------------------------------
+# Timeline per Densitas_relics.md section 4.1, parameterised so future tuning
+# is a one-place edit and the pure helpers below stay testable without pygame.
+SHATTER_ANIM_DURATION: float = 1.0     # animation window length in sim_sec
+SHATTER_CRACK_END: float    = 0.4      # crack lines complete at this offset
+SHATTER_FLASH_AT: float     = 0.4      # white-flash peak (same as crack end)
+SHATTER_FLASH_DURATION: float = 0.2    # flash fades over this window
+SHATTER_FLASH_PEAK_ALPHA: int = 200    # 0..255 at flash start
+SHATTER_FLASH_TILES: int      = 3      # 3x3 tile rect centred on the relic
+SHATTER_CRACK_COLOR: tuple[int, int, int] = (26, 0, 0)  # #1a0000 per spec
+SHATTER_FLASH_COLOR_RGB: tuple[int, int, int] = (255, 255, 255)
+
+
+def shatter_anim_phase(age: float
+                        ) -> tuple[float, int, int]:
+    """Decompose an age-in-sim_seconds into (crack_progress, sprite_alpha,
+    flash_alpha) per Densitas_relics.md section 4.1.
+
+    Returns:
+        crack_progress: 0.0 -> 1.0 over [0, SHATTER_CRACK_END]. After the
+            crack window the cracks stay at full length (1.0).
+        sprite_alpha:   255 over [0, SHATTER_CRACK_END]; fades linearly
+            to 0 over [SHATTER_CRACK_END, SHATTER_ANIM_DURATION]; 0 past
+            that.
+        flash_alpha:    0 before SHATTER_FLASH_AT; peaks at
+            SHATTER_FLASH_PEAK_ALPHA at exactly that moment; decays
+            linearly to 0 over SHATTER_FLASH_DURATION.
+
+    `age` outside [0, SHATTER_ANIM_DURATION] returns the obvious limits
+    (all zeros past the end). Pure function: safe to import and test
+    without pygame initialised.
+    """
+    if age <= 0.0:
+        return (0.0, 255, 0)
+    if age >= SHATTER_ANIM_DURATION:
+        return (1.0, 0, 0)
+
+    # Crack progress: clamps at 1.0 after crack window.
+    if age <= SHATTER_CRACK_END:
+        crack = age / SHATTER_CRACK_END
+    else:
+        crack = 1.0
+
+    # Sprite alpha: 255 during crack window, then linear fade to 0.
+    if age <= SHATTER_CRACK_END:
+        sprite_a = 255
+    else:
+        fade_t = (age - SHATTER_CRACK_END) / (
+            SHATTER_ANIM_DURATION - SHATTER_CRACK_END
+        )
+        sprite_a = max(0, int(255 * (1.0 - fade_t)))
+
+    # Flash alpha: ramps from 0 to peak at SHATTER_FLASH_AT, decays over
+    # SHATTER_FLASH_DURATION. Spec says single-frame; we soften to a
+    # short fade so 60Hz rendering doesn't drop the flash on a single
+    # missed frame.
+    if age < SHATTER_FLASH_AT:
+        flash_a = 0
+    else:
+        decay_t = (age - SHATTER_FLASH_AT) / SHATTER_FLASH_DURATION
+        if decay_t >= 1.0:
+            flash_a = 0
+        else:
+            flash_a = max(0, int(SHATTER_FLASH_PEAK_ALPHA * (1.0 - decay_t)))
+
+    return (crack, sprite_a, flash_a)
+
+
+def shatter_crack_endpoints(relic_id: int, size: int
+                             ) -> tuple[tuple[tuple[int, int], tuple[int, int]],
+                                          tuple[tuple[int, int], tuple[int, int]]]:
+    """Deterministic two-stroke crack pattern keyed by `relic_id`.
+
+    Same relic_id always produces the same pattern. Two strokes, each
+    crossing most of the sprite (edge-to-edge with random offsets).
+    Returns ((p1_a, p1_b), (p2_a, p2_b)) where each point is (x, y) in
+    sprite-local pixel coords (0..size).
+
+    Implementation: stdlib hashing only - no `random.seed` global side
+    effect, no numpy. Tests rely on bit-stable hashing per relic id.
+    """
+    # Pull 8 bytes of pseudo-randomness from the id via a simple linear
+    # congruential mix. Cheap, stable, no imports needed.
+    def _bits(n: int, k: int) -> int:
+        # Stable LCG; returns 0..size-1 from the k-th byte.
+        x = (relic_id * 2654435761 + k * 374761393) & 0xFFFFFFFF
+        x ^= (x >> 16)
+        x = (x * 1597334677) & 0xFFFFFFFF
+        x ^= (x >> 16)
+        return x % max(1, n)
+
+    s = size
+    margin = max(1, s // 8)
+    inner = max(1, s - 2 * margin)
+    # Stroke 1: roughly diagonal NW-SE.
+    p1a = (margin + _bits(inner // 2, 0),
+            margin + _bits(inner // 2, 1))
+    p1b = (s - margin - _bits(inner // 2, 2),
+            s - margin - _bits(inner // 2, 3))
+    # Stroke 2: roughly diagonal NE-SW.
+    p2a = (s - margin - _bits(inner // 2, 4),
+            margin + _bits(inner // 2, 5))
+    p2b = (margin + _bits(inner // 2, 6),
+            s - margin - _bits(inner // 2, 7))
+    return ((p1a, p1b), (p2a, p2b))
+
+
 BELIEF_TINT: dict[int, tuple[int, int, int]] = {
     0: (90, 200, 220),
     1: (220, 60, 60),
@@ -153,6 +260,34 @@ class Renderer(abc.ABC):
         Mirrors `blit_cast_preview` in shape but is its own method
         because the visuals are distinct (circle vs square brush,
         ghost glyph vs cast effect chip).
+        """
+        ...
+
+    @abc.abstractmethod
+    def blit_shatter_animations(self, screen: pygame.Surface, relics,
+                                 cam_x: float, cam_y: float,
+                                 sim_t: float) -> None:
+        """Render the per-relic shatter animation for any SHATTERED relic
+        whose age `sim_t - r.shatter_at` falls within
+        [0, `SHATTER_ANIM_DURATION`] (PR3 step 7).
+
+        Per Densitas_relics.md section 4.1:
+          * 0.0 - 0.4 sim_sec: two procedural cracks draw across the
+            glyph (deterministic per `relic.id` so the same relic
+            cracks the same way every time).
+          * 0.4 sim_sec: white flash pops at the tile (3x3 tile rect,
+            peak alpha 200, fades over `SHATTER_FLASH_DURATION`).
+          * 0.4 - 1.0 sim_sec: sprite alpha fades 255 -> 0.
+          * Past 1.0: the relic is not drawn.
+
+        Position is read from the relic's retained `tx` / `ty`; per spec
+        section 9 these are kept after shatter precisely so this
+        animation has something to anchor to.
+
+        Iterates the passed `relics` once. Frustum culls per the
+        existing convention. The renderer does the filter so callers
+        can just hand over the full `relic_mgr.relics` list every
+        frame.
         """
         ...
 
@@ -740,6 +875,82 @@ class PixelRenderer(Renderer):
                 (cx_label, cy_label, chip_w, chip_h), width=1,
             )
             screen.blit(text_surf, (cx_label + pad_x, cy_label + pad_y))
+
+
+    # -- shatter animations (PR3 step 7) ------------------------------------
+
+    def blit_shatter_animations(self, screen: pygame.Surface, relics,
+                                 cam_x: float, cam_y: float,
+                                 sim_t: float) -> None:
+        """See `Renderer.blit_shatter_animations` for the contract.
+
+        Implementation notes:
+          * For each SHATTERED relic in the animation window we build
+            a per-frame surface: a copy of the faction glyph sprite,
+            with two `pygame.draw.line` strokes drawn over it at the
+            current crack progress.
+          * The sprite alpha is then set via `set_alpha` so both glyph
+            pixels and crack strokes fade together past t=0.4.
+          * The 3x3 tile white flash is a separate overlay surface
+            blitted once per frame at the relic's tile, centred.
+        """
+        if not relics:
+            return
+        from .relics import RelicState
+        ts = self.cfg.tile_size
+        vw, vh = self.cfg.viewport_w, self.cfg.viewport_h
+        target = RELIC_SPRITE_SIZE_PX
+        ox = (ts - target) // 2
+        oy = ts - target
+
+        for r in relics:
+            if int(r.state) != int(RelicState.SHATTERED):
+                continue
+            age = sim_t - r.shatter_at
+            if age < 0.0 or age > SHATTER_ANIM_DURATION:
+                continue
+
+            sprite = self._relic_sprites.get(int(r.faction))
+            if sprite is None:
+                continue
+
+            crack_progress, sprite_alpha, flash_alpha = shatter_anim_phase(age)
+
+            # Build a per-frame surface so we can draw partial crack
+            # strokes on top of the glyph without mutating the cache.
+            anim = sprite.copy()
+            (a1, a2), (b1, b2) = shatter_crack_endpoints(int(r.id), target)
+            # Lerp from start point toward end point by crack_progress
+            # so the strokes draw in over the 0.4 sim_sec window.
+            def _lerp(p, q, t):
+                return (int(p[0] + (q[0] - p[0]) * t),
+                        int(p[1] + (q[1] - p[1]) * t))
+            ea = _lerp(a1, a2, crack_progress)
+            eb = _lerp(b1, b2, crack_progress)
+            pygame.draw.line(anim, SHATTER_CRACK_COLOR, a1, ea, width=2)
+            pygame.draw.line(anim, SHATTER_CRACK_COLOR, b1, eb, width=2)
+            if sprite_alpha < 255:
+                anim.set_alpha(sprite_alpha)
+
+            sx = int(r.tx * ts - cam_x + ox)
+            sy = int(r.ty * ts - cam_y + oy)
+            if not (sx + target < 0 or sy + target < 0
+                    or sx >= vw or sy >= vh):
+                screen.blit(anim, (sx, sy))
+
+            # White flash overlay (3x3 tile rect, centred on the relic
+            # tile). Drawn even when slightly off-tile - the SDL clip
+            # will trim it.
+            if flash_alpha > 0:
+                half = SHATTER_FLASH_TILES // 2
+                fx = int((r.tx - half) * ts - cam_x)
+                fy = int((r.ty - half) * ts - cam_y)
+                fsize = SHATTER_FLASH_TILES * ts
+                if not (fx + fsize < 0 or fy + fsize < 0
+                        or fx >= vw or fy >= vh):
+                    flash = pygame.Surface((fsize, fsize), pygame.SRCALPHA)
+                    flash.fill((*SHATTER_FLASH_COLOR_RGB, flash_alpha))
+                    screen.blit(flash, (fx, fy))
 
 
 def make_renderer(cfg: RenderConfig) -> Renderer:

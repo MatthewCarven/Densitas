@@ -1530,3 +1530,256 @@ def test_80_threat_fraction_zero_shatter_time_does_not_div_by_zero():
     r = mgr.get(0, 0)
     r.threat_timer = 5.0
     assert threat_fraction(r, shatter_time=0.0) == 0.0
+
+
+# =============================================================================
+# PR3 step 7 - shatter animation pure helpers (see densitas/render.py).
+# Tests are pure-Python: the shatter_anim_phase + shatter_crack_endpoints
+# helpers are unit-testable without pygame. The blit_shatter_animations
+# renderer is exercised by the headless main() smoke run.
+# =============================================================================
+
+from densitas.render import (
+    shatter_anim_phase, shatter_crack_endpoints,
+    SHATTER_ANIM_DURATION, SHATTER_CRACK_END,
+    SHATTER_FLASH_AT, SHATTER_FLASH_DURATION,
+    SHATTER_FLASH_PEAK_ALPHA, RELIC_SPRITE_SIZE_PX,
+)
+
+
+def test_90_shatter_phase_age_zero_full_sprite_no_crack_no_flash():
+    """At t=0 (the instant of shatter), no cracks have drawn yet,
+    the sprite is fully opaque, and the flash hasn't fired."""
+    crack, sprite_a, flash_a = shatter_anim_phase(0.0)
+    assert crack == 0.0
+    assert sprite_a == 255
+    assert flash_a == 0
+
+
+def test_91_shatter_phase_mid_crack_window():
+    """At the midpoint of the crack window, cracks are halfway drawn,
+    sprite still solid, flash still off."""
+    crack, sprite_a, flash_a = shatter_anim_phase(SHATTER_CRACK_END / 2.0)
+    assert 0.49 < crack < 0.51
+    assert sprite_a == 255
+    assert flash_a == 0
+
+
+def test_92_shatter_phase_at_flash_moment_peaks():
+    """At t=SHATTER_FLASH_AT the flash hits its peak alpha and the
+    sprite is at full alpha (about to start fading)."""
+    crack, sprite_a, flash_a = shatter_anim_phase(SHATTER_FLASH_AT)
+    assert crack == 1.0
+    assert sprite_a == 255
+    assert flash_a == SHATTER_FLASH_PEAK_ALPHA
+
+
+def test_93_shatter_phase_just_after_flash_decays():
+    """A short time past flash, flash decays linearly toward zero."""
+    crack, sprite_a, flash_a = shatter_anim_phase(
+        SHATTER_FLASH_AT + SHATTER_FLASH_DURATION / 2.0
+    )
+    # Sprite has begun fading too - not yet at 0.
+    assert 0 < sprite_a < 255
+    # Flash is mid-decay -> roughly half its peak.
+    expected = SHATTER_FLASH_PEAK_ALPHA // 2
+    assert abs(flash_a - expected) <= 1
+    assert crack == 1.0
+
+
+def test_94_shatter_phase_flash_finishes_before_anim_ends():
+    """Past the flash decay window, flash_alpha returns to 0 while the
+    sprite continues fading."""
+    age = SHATTER_FLASH_AT + SHATTER_FLASH_DURATION + 0.01
+    crack, sprite_a, flash_a = shatter_anim_phase(age)
+    assert flash_a == 0
+    assert 0 < sprite_a < 255
+
+
+def test_95_shatter_phase_just_before_end_sprite_near_zero():
+    """Near t=SHATTER_ANIM_DURATION the sprite has nearly faded out."""
+    crack, sprite_a, flash_a = shatter_anim_phase(
+        SHATTER_ANIM_DURATION - 0.01
+    )
+    assert sprite_a < 10
+    assert flash_a == 0
+
+
+def test_96_shatter_phase_past_end_returns_terminal_state():
+    """Any age >= SHATTER_ANIM_DURATION returns the terminal state
+    (cracks fully drawn, sprite gone, no flash)."""
+    crack, sprite_a, flash_a = shatter_anim_phase(SHATTER_ANIM_DURATION)
+    assert crack == 1.0
+    assert sprite_a == 0
+    assert flash_a == 0
+    # And far past:
+    crack2, sprite_a2, flash_a2 = shatter_anim_phase(99.0)
+    assert (crack2, sprite_a2, flash_a2) == (1.0, 0, 0)
+
+
+def test_97_shatter_phase_negative_age_returns_pre_state():
+    """Defensive: negative age treats the relic as not yet shattered."""
+    crack, sprite_a, flash_a = shatter_anim_phase(-0.5)
+    assert (crack, sprite_a, flash_a) == (0.0, 255, 0)
+
+
+def test_98_crack_endpoints_deterministic_per_relic_id():
+    """Calling shatter_crack_endpoints with the same id always returns
+    the same two strokes - shatters are visually consistent across
+    save/load and across multiple frames."""
+    a = shatter_crack_endpoints(7, RELIC_SPRITE_SIZE_PX)
+    b = shatter_crack_endpoints(7, RELIC_SPRITE_SIZE_PX)
+    assert a == b
+
+
+def test_99_crack_endpoints_different_ids_differ():
+    """Two different relic ids should produce different crack patterns
+    (with overwhelming probability for the 8-byte LCG mix)."""
+    a = shatter_crack_endpoints(1, RELIC_SPRITE_SIZE_PX)
+    b = shatter_crack_endpoints(99, RELIC_SPRITE_SIZE_PX)
+    assert a != b
+
+
+def test_A0_crack_endpoints_stay_inside_sprite():
+    """All four points of both strokes must be inside [0, size)."""
+    size = RELIC_SPRITE_SIZE_PX
+    for rid in range(20):
+        (a1, a2), (b1, b2) = shatter_crack_endpoints(rid, size)
+        for (x, y) in (a1, a2, b1, b2):
+            assert 0 <= x < size, f"id={rid} x={x} out of bounds"
+            assert 0 <= y < size, f"id={rid} y={y} out of bounds"
+
+
+# =============================================================================
+# PR3 step 9 - shatter summary panel pure helpers (see densitas/hud.py).
+# Tests are pure-Python: panel_phase / panel_slide_offset / panel_rect /
+# ease_out_cubic don't touch pygame. The renderer integration is exercised
+# by a direct render sweep in the smoke run.
+# =============================================================================
+
+from densitas.hud import (
+    panel_phase, panel_slide_offset, panel_rect, ease_out_cubic,
+    PANEL_W, PANEL_H, PANEL_MARGIN,
+    PANEL_SLIDE_DURATION, PANEL_HOLD_DURATION,
+    PANEL_PHASE_SLIDE_IN, PANEL_PHASE_HOLDING, PANEL_PHASE_SLIDE_OUT,
+    PANEL_PHASE_DONE, PANEL_PHASE_MANUAL,
+)
+
+
+def test_B0_ease_out_cubic_endpoints():
+    assert ease_out_cubic(0.0) == 0.0
+    assert ease_out_cubic(1.0) == 1.0
+    # Past the bounds clamps
+    assert ease_out_cubic(-1.0) == 0.0
+    assert ease_out_cubic(2.0) == 1.0
+
+
+def test_B1_ease_out_cubic_monotonic_and_decelerating():
+    """Ease-out: steepest at the start, plateaus at the end."""
+    vals = [ease_out_cubic(t / 10) for t in range(11)]
+    # Strictly monotonic increasing.
+    for a, b in zip(vals, vals[1:]):
+        assert b > a
+    # At t=0.5 the eased value should be well past 0.5 (cubic ease-out is
+    # 1 - (1 - 0.5)^3 = 1 - 0.125 = 0.875).
+    assert abs(ease_out_cubic(0.5) - 0.875) < 1e-9
+
+
+def test_B2_panel_phase_auto_sliding_in():
+    opened = 100.0
+    p, prog = panel_phase(opened, opened + 0.0, manual=False)
+    assert p == PANEL_PHASE_SLIDE_IN
+    assert prog == 0.0
+    p, prog = panel_phase(opened, opened + PANEL_SLIDE_DURATION / 2,
+                           manual=False)
+    assert p == PANEL_PHASE_SLIDE_IN
+    assert abs(prog - 0.5) < 1e-9
+
+
+def test_B3_panel_phase_auto_holding():
+    opened = 100.0
+    p, prog = panel_phase(opened, opened + PANEL_SLIDE_DURATION + 0.001,
+                           manual=False)
+    assert p == PANEL_PHASE_HOLDING
+    # prog is the elapsed hold-sec, so close to zero
+    assert prog < 0.01
+    # Mid-hold
+    p, prog = panel_phase(opened,
+                           opened + PANEL_SLIDE_DURATION + PANEL_HOLD_DURATION / 2,
+                           manual=False)
+    assert p == PANEL_PHASE_HOLDING
+    assert abs(prog - PANEL_HOLD_DURATION / 2) < 1e-9
+
+
+def test_B4_panel_phase_auto_sliding_out():
+    opened = 100.0
+    age = PANEL_SLIDE_DURATION + PANEL_HOLD_DURATION + PANEL_SLIDE_DURATION / 2
+    p, prog = panel_phase(opened, opened + age, manual=False)
+    assert p == PANEL_PHASE_SLIDE_OUT
+    assert abs(prog - 0.5) < 1e-9
+
+
+def test_B5_panel_phase_auto_done():
+    """Slightly past the slide-out tail (epsilon margin because FP makes
+    100.0 + 10.8 - 100.0 = 10.799999999999997, which lands the panel in
+    the very last frame of slide-out instead of DONE)."""
+    opened = 100.0
+    age = PANEL_SLIDE_DURATION + PANEL_HOLD_DURATION + PANEL_SLIDE_DURATION + 0.01
+    p, prog = panel_phase(opened, opened + age, manual=False)
+    assert p == PANEL_PHASE_DONE
+
+
+def test_B6_panel_phase_manual_stays_in_manual_phase():
+    """Manual re-opens never transition to slide-out or done on their own."""
+    opened = 50.0
+    for age in (0.0, 0.5, 5.0, 50.0, 500.0):
+        p, _ = panel_phase(opened, opened + age, manual=True)
+        assert p == PANEL_PHASE_MANUAL
+
+
+def test_B7_panel_phase_negative_age_clamps_to_zero():
+    """Defensive: a future-dated opened_at returns slide-in at progress 0."""
+    p, prog = panel_phase(opened_at=100.0, sim_t=99.5, manual=False)
+    assert p == PANEL_PHASE_SLIDE_IN
+    assert prog == 0.0
+
+
+def test_B8_panel_slide_offset_endpoints():
+    """At slide-in progress 0 the panel is fully off-screen; at progress 1
+    it's fully on. Slide-out is the opposite."""
+    assert panel_slide_offset(PANEL_PHASE_SLIDE_IN, 0.0) == PANEL_W
+    assert panel_slide_offset(PANEL_PHASE_SLIDE_IN, 1.0) == 0
+    assert panel_slide_offset(PANEL_PHASE_SLIDE_OUT, 0.0) == 0
+    assert panel_slide_offset(PANEL_PHASE_SLIDE_OUT, 1.0) == PANEL_W
+    assert panel_slide_offset(PANEL_PHASE_HOLDING, 5.0) == 0
+    assert panel_slide_offset(PANEL_PHASE_MANUAL, 0.0) == 0
+    assert panel_slide_offset(PANEL_PHASE_DONE, 0.0) == PANEL_W
+
+
+def test_B9_panel_slide_in_is_monotonically_decreasing_offset():
+    """As slide-in progresses, offset goes from PANEL_W down to 0."""
+    offs = [panel_slide_offset(PANEL_PHASE_SLIDE_IN, t / 10)
+            for t in range(11)]
+    # Monotonically non-increasing.
+    for a, b in zip(offs, offs[1:]):
+        assert b <= a
+
+
+def test_C0_panel_rect_anchors_right_edge_when_offset_zero():
+    sw, sh = 1280, 720
+    x, y, w, h = panel_rect(sw, sh, slide_offset=0)
+    assert w == PANEL_W
+    assert h == PANEL_H
+    assert x + w == sw - PANEL_MARGIN
+    # Vertically centred
+    assert y == (sh - PANEL_H) // 2
+
+
+def test_C1_panel_rect_offset_shifts_right():
+    sw, sh = 1280, 720
+    x0, _, _, _ = panel_rect(sw, sh, slide_offset=0)
+    x1, _, _, _ = panel_rect(sw, sh, slide_offset=PANEL_W)
+    assert x1 - x0 == PANEL_W
+    # Fully-off: left edge of panel sits at the screen's right edge
+    # minus margin (so it's just out of the viewport).
+    assert x1 == sw - PANEL_MARGIN

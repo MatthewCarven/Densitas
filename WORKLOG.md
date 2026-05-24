@@ -742,3 +742,175 @@ Step 9 (summary-panel slide-in) can now bind the click-to-reopen hook
 to the SHATTERED slot's `Rect` from `blit_relic_tray`'s return value.
 
 Lands via `commit_relics_step8.cmd`.
+## 2026-05-23 - PR3 step 7 staged: shatter animation on the map
+
+When a relic shatters, the player now sees it. Per
+`Densitas_relics.md` section 4.1: two deterministic crack lines draw
+across the glyph over 0.4 sim_sec, a 3x3-tile white flash pops at the
+tile (peak alpha 200, fades over 0.2 sim_sec), and the sprite fades
+out from t=0.4 to t=1.0. Past 1.0 the relic is no longer drawn.
+
+Implemented as the renderer's responsibility: `Relic.shatter_at` (set
+by step 4 when the shatter rule fires) is the only state needed - the
+renderer reads it each frame and computes the visual phase from
+`sim_t - shatter_at`. The relic's `tx` / `ty` is retained post-shatter
+(per spec section 9) so we always have a tile anchor.
+
+Sub-changes (one logical commit, four files):
+
+- `densitas/render.py` - new module-level constants
+  (`SHATTER_ANIM_DURATION`, `SHATTER_CRACK_END`, `SHATTER_FLASH_AT`,
+  `SHATTER_FLASH_DURATION`, `SHATTER_FLASH_PEAK_ALPHA`,
+  `SHATTER_FLASH_TILES`, `SHATTER_CRACK_COLOR` = (26, 0, 0) per
+  spec's #1a0000, `SHATTER_FLASH_COLOR_RGB`). Two pure helpers:
+  `shatter_anim_phase(age) -> (crack_progress, sprite_alpha,
+  flash_alpha)` decomposes a sim-sec age into the three visual
+  parameters; `shatter_crack_endpoints(relic_id, size)` returns a
+  deterministic two-stroke pattern keyed by the relic id (stable
+  LCG mix so the same relic always shatters the same way - matters
+  for save/load consistency). New abstract method
+  `Renderer.blit_shatter_animations(screen, relics, cam_x, cam_y,
+  sim_t)` plus PixelRenderer impl: per SHATTERED relic in the
+  window, builds a copy of the faction glyph, draws two crack
+  strokes lerping from start to end over the crack window, sets
+  the surface alpha for the fade phase, blits at the tile (bottom-
+  centred like `blit_relics`), and overlays a 3x3-tile white flash
+  square during the flash window. Both glyph and flash frustum-cull.
+
+- `densitas/main.py` - one new call after `blit_relics`:
+  `renderer.blit_shatter_animations(screen, relic_mgr.relics,
+  cam.x, cam.y, sim_time)`. Passes the FULL relic list (not just
+  PLACED) since the renderer filters internally to SHATTERED-in-
+  window; no-op past the 1.0 sec window.
+
+- `tests/test_relics.py` - 11 new tests (162 -> 173 total):
+  - 90-97: `shatter_anim_phase` boundary values (age=0,
+    mid-crack, flash peak, flash mid-decay, flash done,
+    near-end, exactly-end, past-end, negative-age).
+  - 98-99: `shatter_crack_endpoints` determinism per relic_id
+    and divergence across different ids.
+  - A0: crack endpoints stay inside [0, size) for 20 sample ids.
+
+Tests: 173 / 173 pass headlessly (162 before + 11 new),
+`SDL_VIDEODRIVER=dummy`, `--assert=plain`, fresh cache.
+`py_compile` clean on the two touched modules. A direct render
+sweep across nine ages (-0.1, 0.0, 0.2, 0.4, 0.5, 0.65, 0.9, 1.0,
+1.5) confirms the timeline numbers match expectations and no
+exception fires at any phase including the off-window edges.
+Full `main()` headless boot smoke returns 0.
+
+**Try it:** launch `start.cmd` and trigger a shatter (the
+quickest path is to spawn or attract a large rival population
+near one of your placed relics so its tile sees sustained rival
+belief above `shatter_ratio * yours`). When the relic flips
+SHATTERED you should see: two dark-red cracks draw across the
+glyph (~0.4 sec), a single white flash filling the 3x3 area
+around the tile, then the relic fades out over the next 0.6 sec.
+The HUD tray slot (step 8) flips to the skull-X icon at the
+moment of shatter and stays that way - the on-map animation is
+the ceremony; the tray is the record.
+
+Next: step 9 (shatter summary panel slide-in) - the natural pair
+to the animation. The tray's `Rect` from `blit_relic_tray`
+already gives step 9 the click-target geometry for re-opening
+the panel.
+
+Lands via `commit_relics_step7.cmd`.
+## 2026-05-24 - PR3 step 9 staged: shatter summary panel
+
+The "biggest event in the game short of a citizen-zero" (per
+`Densitas_relics.md` section 1, pillar 4) now has the ceremony spec
+section 6 demanded. When a relic shatters: the on-map crack/flash
+plays (step 7), then 1.0 sim_sec later (matching the animation
+duration) a parchment-and-gold panel slides in from the right edge
+with the full `ShatterSummary` numbers. Holds for 10 sim_sec. Slides
+out. Clicking the panel dismisses it early; clicking the SHATTERED
+tray slot (step 8's hook is finally wired) re-opens the same panel
+in manual mode (no auto-close).
+
+Layout per spec section 6:
+  * 320 x 280 px, parchment background (#f4e9ce), 2px gold border.
+  * Vertically centred, anchored against the right edge.
+  * Heading "A RELIC HAS BROKEN" in dark red, then relic name,
+    then "Tile (tx,ty)" + sim_t row, then two-section body:
+    Local belief at shatter (yours / rival + derived "ratio Nx"
+    chip in red if ratio >= 1.5), Citizens within 8 tiles
+    (yours / rival), then Time placed + Times moved.
+  * Bottom "(click to dismiss)" hint in dim grey.
+
+Implementation note (deviation from spec): spec section 6 nominally
+uses 0.4 *wall* seconds for the slide and 10 *sim* seconds for the
+hold. We use sim_t throughout for consistency with the rest of the
+engine; at normal game speed these are equivalent and using one clock
+keeps the panel_phase helper pure and testable. If we ever add a
+pause mechanic, slides would need to switch to wall_t.
+
+Sub-changes (one logical commit, four files):
+
+- `densitas/hud.py` - module-level `PANEL_*` constants and five pure
+  helpers: `ease_out_cubic` (clamped at [0,1]), `panel_phase(opened_at,
+  sim_t, manual) -> (phase, progress)` decomposing elapsed time into
+  one of five phase tokens, `panel_slide_offset(phase, progress) -> int`
+  giving x-pixel offset (0 fully on, +PANEL_W fully off to right),
+  `panel_rect(screen_w, screen_h, slide_offset) -> (x, y, w, h)`
+  anchoring the panel against the right edge. New
+  `HUD.blit_shatter_summary_panel(screen, summary, opened_at, sim_t,
+  manual)` draws the card, returns the current `pygame.Rect` or
+  `None` when phase=='done'.
+
+- `densitas/main.py` - four wiring inserts:
+  - State decls (`pending_shatters: list`, `panel_state: Optional[tuple]`,
+    `tray_slot_rects_last: list`, `panel_rect_last`).
+  - Tick handler appends every new ShatterSummary into
+    `pending_shatters` with the sim_t at which it fired.
+  - LMB handler intercepts BEFORE relic_input / active_mode: a panel
+    click jumps an auto-panel to slide-out (rewinds `opened_at` so the
+    next frame starts slide-out at progress 0) or clears a manual
+    panel; a click on a SHATTERED tray slot opens a manual panel with
+    that relic's `shatter_summary`. Both branches set
+    `_panel_consumed = True` and `continue` to skip falling through
+    to power-cast.
+  - Each-frame block (after `blit_relic_tray`) advances the queue:
+    if no panel is open and oldest pending is >= `PANEL_OPEN_DELAY`
+    sim_sec old (1.0 by default), pop and open the auto panel. Then
+    render the panel and capture the `Rect`. Done-state clears
+    `panel_state` so the next pending entry can pop in.
+
+- `tests/test_relics.py` - 12 new tests (173 -> 185):
+  - B0-B1: `ease_out_cubic` endpoints + monotonic deceleration.
+  - B2-B5: `panel_phase` auto path (slide-in / holding / slide-out /
+    done with FP-safe epsilon).
+  - B6: manual phase stays in PANEL_PHASE_MANUAL for all ages.
+  - B7: negative-age (future-dated opened_at) clamps to slide-in@0.
+  - B8: `panel_slide_offset` endpoints across all five phases.
+  - B9: slide-in offset is monotonically non-increasing
+    (panel pulls in, never pushes back out).
+  - C0-C1: `panel_rect` anchors to right edge at offset=0, shifts
+    full PANEL_W to land just past the right edge at offset=PANEL_W.
+
+Tests: 185 / 185 pass headlessly (173 before + 12 new),
+`SDL_VIDEODRIVER=dummy`, `--assert=plain`, fresh cache. `py_compile`
+clean on the two touched modules. A direct render sweep across seven
+timeline phases (slide-in start / mid / complete, mid-hold,
+slide-out start / mid, done) plus the manual-stays-open case
+confirmed the panel rect tracks correctly: 1272 -> 952 -> 952 -> 952
+-> 960 -> 1112 -> None for the auto path on a 1280-wide screen,
+manual pins at 952 forever. Full `main()` headless boot smoke
+returns 0.
+
+**Try it:** launch `start.cmd`, trigger a shatter (sustained rival
+belief near a placed relic). After the on-map crack/flash/fade
+completes, a parchment panel slides in from the right with the
+shatter numbers - your belief, rival's belief, the ratio, citizen
+counts within 8 tiles, time placed total, times moved. Click the
+panel to dismiss early, or wait ~10 sim_sec for it to auto-slide-out.
+Then click the SHATTERED slot in the bottom-right tray to re-open the
+panel any time later - manual re-opens stay until you click them.
+
+Next: step 12 (rhetoric pool keys for the propaganda layer) is the
+last presentation slice for PR3 - it wires actual scripture lines
+to relic_placed / relic_moved / relic_retrieved / relic_shattered
+instead of the stdout placeholders. Step 13 (save/load) closes the
+round-trip.
+
+Lands via `commit_relics_step9.cmd`.
