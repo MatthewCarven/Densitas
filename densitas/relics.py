@@ -32,6 +32,12 @@ if TYPE_CHECKING:
     from .citizen import CitizenManager
 
 
+# Save-file schema version for PR3 step 13. Bump if the to_dict/from_dict
+# shape changes; from_dict raises ValueError on any other value so old
+# saves fail loudly rather than silently mis-rehydrating.
+SAVE_FORMAT_VERSION = 1
+
+
 class RelicState(enum.IntEnum):
     """Three-state lifecycle. See `Densitas_relics.md` section 2.
 
@@ -89,6 +95,48 @@ class ShatterSummary:
     time_placed_total: float          # cumulative sim_s spent in PLACED state
     times_moved: int
 
+    # -- Save / load (PR3 step 13) ----------------------------------------
+
+    def to_dict(self) -> dict:
+        """JSON-safe dict of all 12 fields. Floats stay floats, ints
+        stay ints, name is a str. No nested non-primitives.
+        """
+        return {
+            "relic_id": self.relic_id,
+            "faction": self.faction,
+            "name": self.name,
+            "tx": self.tx,
+            "ty": self.ty,
+            "sim_t": self.sim_t,
+            "local_belief_player": self.local_belief_player,
+            "local_belief_rival": self.local_belief_rival,
+            "player_citizens_within_8": self.player_citizens_within_8,
+            "rival_citizens_within_8": self.rival_citizens_within_8,
+            "time_placed_total": self.time_placed_total,
+            "times_moved": self.times_moved,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ShatterSummary":
+        """Inverse of to_dict. Coerces types defensively in case the
+        save was hand-edited or rehydrated from a format that lost
+        int/float distinction (e.g. JSON read with parse_float=str).
+        """
+        return cls(
+            relic_id=int(d["relic_id"]),
+            faction=int(d["faction"]),
+            name=str(d["name"]),
+            tx=int(d["tx"]),
+            ty=int(d["ty"]),
+            sim_t=float(d["sim_t"]),
+            local_belief_player=float(d["local_belief_player"]),
+            local_belief_rival=float(d["local_belief_rival"]),
+            player_citizens_within_8=int(d["player_citizens_within_8"]),
+            rival_citizens_within_8=int(d["rival_citizens_within_8"]),
+            time_placed_total=float(d["time_placed_total"]),
+            times_moved=int(d["times_moved"]),
+        )
+
 
 @dataclass
 class Relic:
@@ -118,6 +166,57 @@ class Relic:
     # Useful for `ShatterSummary.time_placed_total`. Incremented in `tick`
     # (PR3 step 4) and reset on `retrieve` / new `place`.
     _placed_time_accum: float = field(default=0.0, repr=False)
+
+    # -- Save / load (PR3 step 13) --------------------------------------------
+
+    def to_dict(self) -> dict:
+        """JSON-safe dict. `state` becomes its IntEnum int value.
+        `shatter_summary` is None or a nested dict. `_placed_time_accum`
+        is exposed as `placed_time_accum` (no leading underscore) so the
+        save file reads cleanly; it's still restored to the private
+        attribute on the way back in.
+        """
+        return {
+            "id": self.id,
+            "faction": self.faction,
+            "slot": self.slot,
+            "name": self.name,
+            "state": int(self.state),
+            "tx": self.tx,
+            "ty": self.ty,
+            "placed_at": self.placed_at,
+            "times_moved": self.times_moved,
+            "threat_timer": self.threat_timer,
+            "shatter_at": self.shatter_at,
+            "shatter_summary": (
+                self.shatter_summary.to_dict()
+                if self.shatter_summary is not None else None
+            ),
+            "placed_time_accum": self._placed_time_accum,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Relic":
+        """Inverse of to_dict. `state` is coerced via RelicState(int)
+        which will raise ValueError on an unknown int - that's the
+        right behaviour for a corrupt save.
+        """
+        ss = d.get("shatter_summary")
+        return cls(
+            id=int(d["id"]),
+            faction=int(d["faction"]),
+            slot=int(d["slot"]),
+            name=str(d["name"]),
+            state=RelicState(int(d["state"])),
+            tx=int(d["tx"]),
+            ty=int(d["ty"]),
+            placed_at=float(d["placed_at"]),
+            times_moved=int(d["times_moved"]),
+            threat_timer=float(d["threat_timer"]),
+            shatter_at=float(d["shatter_at"]),
+            shatter_summary=(ShatterSummary.from_dict(ss) if ss is not None else None),
+            _placed_time_accum=float(d.get("placed_time_accum", 0.0)),
+        )
 
 
 class RelicManager:
@@ -440,6 +539,78 @@ class RelicManager:
             if other.tx == tx and other.ty == ty:
                 return (False, "tile already has a same-faction relic")
         return (True, "valid")
+
+    # -- Save / load (PR3 step 13) ---------------------------------------------
+
+    def to_dict(self) -> dict:
+        """Full state of the manager as a JSON-safe dict.
+
+        Does NOT serialise `cfg` - configuration is loaded separately
+        from `config.toml` so saves don't pin old config. We do save
+        `initial_count` and `n_factions` as integrity checks: from_dict
+        raises ValueError if the provided cfg's `initial_count` or the
+        manager's `n_factions` disagrees with the save.
+
+        Schema versioned via the module-level `SAVE_FORMAT_VERSION`
+        constant. Bump it whenever the field set changes.
+        """
+        return {
+            "version": SAVE_FORMAT_VERSION,
+            "n_factions": self.n_factions,
+            "initial_count": self.cfg.initial_count,
+            "relics": [r.to_dict() for r in self.relics],
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict, cfg: "RelicConfig") -> "RelicManager":
+        """Rehydrate from a `to_dict()` payload.
+
+        `cfg` is supplied separately (saves don't carry config). Raises:
+          - ValueError if version != SAVE_FORMAT_VERSION
+          - ValueError if saved initial_count != cfg.initial_count
+          - ValueError if relic count != n_factions * initial_count
+          - ValueError if any relic's id doesn't match the
+            faction * initial_count + slot formula
+
+        Bypasses __init__ via __new__ so we don't double-allocate the
+        fresh-empty Relic list before overwriting it with the loaded
+        one.
+        """
+        version = int(d.get("version", -1))
+        if version != SAVE_FORMAT_VERSION:
+            raise ValueError(
+                f"unknown save version {version} "
+                f"(expected {SAVE_FORMAT_VERSION})"
+            )
+        n_factions = int(d["n_factions"])
+        if n_factions < 1:
+            raise ValueError(f"saved n_factions must be >= 1, got {n_factions}")
+        saved_initial = int(d["initial_count"])
+        if saved_initial != cfg.initial_count:
+            raise ValueError(
+                f"saved initial_count {saved_initial} != "
+                f"cfg.initial_count {cfg.initial_count}"
+            )
+        relics_data = d["relics"]
+        expected_count = n_factions * cfg.initial_count
+        if len(relics_data) != expected_count:
+            raise ValueError(
+                f"expected {expected_count} relics "
+                f"({n_factions} factions x {cfg.initial_count} slots), "
+                f"got {len(relics_data)}"
+            )
+        mgr = cls.__new__(cls)
+        mgr.cfg = cfg
+        mgr.n_factions = n_factions
+        mgr.relics = [Relic.from_dict(rd) for rd in relics_data]
+        for i, r in enumerate(mgr.relics):
+            expected_id = r.faction * cfg.initial_count + r.slot
+            if r.id != expected_id:
+                raise ValueError(
+                    f"relic[{i}] id={r.id} doesn't match "
+                    f"faction*initial_count+slot={expected_id}"
+                )
+        return mgr
 
 # =============================================================================
 # PR3 step 10 - R-key input modes.

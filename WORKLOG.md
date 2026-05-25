@@ -914,3 +914,95 @@ instead of the stdout placeholders. Step 13 (save/load) closes the
 round-trip.
 
 Lands via `commit_relics_step9.cmd`.
+
+---
+
+## 2026-05-24 - PR3 step 13 staged: save/load round-trip
+
+The last functional slice of PR3. Every relic field including the
+nested `ShatterSummary` survives a dict round-trip, and the dict is
+JSON-safe so the same `to_dict()` output can be `json.dumps`'d /
+written to disk by a later session without changes.
+
+**Scope is spec-literal.** Per `Densitas_relics.md` §13: "`RelicManager.to_dict`
+/ `from_dict`. Smoke test for round-trip." Per §10: "Serialise the
+full `Relic` list (including `shatter_summary`) verbatim.
+`RelicManager.from_dict` rehydrates." So this is dict-level only -
+no file I/O, no whole-game save format, no save/load button. The
+later "save the whole game" work (citizens + belief + sim_t + world
+seed) is its own session.
+
+**What landed:**
+
+- `densitas/relics.py`:
+  - `SAVE_FORMAT_VERSION = 1` module constant. `from_dict` raises on
+    anything else so a future schema bump fails loudly rather than
+    silently mis-rehydrating.
+  - `ShatterSummary.to_dict` / `from_dict` - 12 fields, all
+    primitives. `from_dict` coerces with `int()` / `float()` / `str()`
+    so a hand-edited save or a JSON parse that lost the int/float
+    distinction still rehydrates.
+  - `Relic.to_dict` / `from_dict` - 13 fields. `state` serialised
+    as `int(RelicState)`. `shatter_summary` is `None` or a nested
+    dict. `_placed_time_accum` exposed as `placed_time_accum` (no
+    leading underscore) for readable save files; round-trips back to
+    the private attribute via `cls(_placed_time_accum=...)`.
+  - `RelicManager.to_dict` / `from_dict` - top-level dict has
+    `version`, `n_factions`, `initial_count`, `relics`. `cfg` is NOT
+    serialised - it's supplied as a `from_dict` parameter so saves
+    don't pin old config. `from_dict` validation:
+      * `version != SAVE_FORMAT_VERSION` raises
+      * `n_factions < 1` raises
+      * saved `initial_count != cfg.initial_count` raises
+      * `len(relics) != n_factions * initial_count` raises
+      * any relic with `id != faction*initial_count+slot` raises
+    Bypasses `__init__` via `__new__` so we don't allocate a fresh
+    empty list only to discard it.
+
+- `tests/test_relics.py` - 8 new tests (185 -> 193):
+  - C2: fresh-manager round-trip preserves all AVAILABLE relics.
+  - C3: place/move/retrieve/place round-trip preserves state +
+    `_placed_time_accum` + `times_moved` + new `placed_at`.
+  - C4: SHATTERED with `ShatterSummary` round-trips all 12 summary
+    fields exactly (uses dataclass equality on `ShatterSummary`).
+  - C5: `to_dict` output is directly `json.dumps`'able; parsed-back
+    dict is a valid `from_dict` input.
+  - C6: `from_dict` rejects unknown version.
+  - C7: `from_dict` rejects `initial_count` mismatch.
+  - C8: `from_dict` rejects truncated relic list.
+  - C9: `from_dict` rejects `id != faction*initial_count+slot`.
+
+**Tests:** 193 / 193 pass headlessly (185 before + 8 new),
+`SDL_VIDEODRIVER=dummy`, `--assert=plain`. `py_compile` clean on the
+single touched module. Full `main()` headless boot smoke returns 0.
+
+**Design notes for future-Claude:**
+
+- *Why `cfg` is not in the save.* Configuration is owned by
+  `config.toml` - it's the player's tuning surface, not the round's
+  state. A save from a round with `shatter_time=8` should still load
+  cleanly under a player who has tuned to `shatter_time=12`; what
+  changes is *future* shatter timing, not the relics' frozen history.
+- *Why `_placed_time_accum` is in the save.* It feeds
+  `ShatterSummary.time_placed_total`. A relic that's been placed for
+  600 sim_sec across two retrieve cycles must report that on shatter
+  whether or not the round just round-tripped through disk.
+- *Why `__new__` not `__init__`.* The constructor allocates the full
+  `relics` list with fresh AVAILABLE objects. For deserialization we
+  want to set the list to the loaded one directly; `__new__` skips
+  the allocation cleanly without a `relics=None` constructor
+  override that would muddy the public API.
+- *Why no file I/O.* Step 13 is the round-trip primitive only -
+  spec-literal. The eventual save-file work needs to round-trip
+  citizens + belief + sim_t + world seed and that's a much bigger
+  design conversation. Building the file API on top of the primitive
+  is later.
+
+**PR3 scope.** With step 13 staged, the only spec item left in PR3
+is step 12 (rhetoric pool keys: `relic_placed.<god>` /
+`relic_moved.<god>` / `relic_retrieved.<god>` /
+`relic_shattered.<god>`). Currently `main.py` emits stdout
+placeholders for all four; step 12 wires real scripture lines from
+the propaganda pool.
+
+Lands via `commit_relics_step13.cmd`.

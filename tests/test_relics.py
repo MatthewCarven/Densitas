@@ -1783,3 +1783,175 @@ def test_C1_panel_rect_offset_shifts_right():
     # Fully-off: left edge of panel sits at the screen's right edge
     # minus margin (so it's just out of the viewport).
     assert x1 == sw - PANEL_MARGIN
+
+
+
+# =============================================================================
+# PR3 step 13 - save/load round-trip (RelicManager.to_dict / from_dict).
+# See Densitas_relics.md section 13 + section 10 ("Save / load") for spec.
+# =============================================================================
+
+import json as _json
+import pytest as _pytest
+
+
+def _stock_mgr(initial_count=3, n_factions=2):
+    """Helper: build a fresh RelicManager with the standard config.
+    Reuses _make_relic_cfg from earlier in the file."""
+    from densitas.relics import RelicManager
+    cfg = _make_relic_cfg(initial_count=initial_count)
+    return RelicManager(cfg, n_factions=n_factions), cfg
+
+
+def _relics_equal(a, b) -> bool:
+    """Deep field equality between two Relic instances (incl. private)."""
+    fields = ("id", "faction", "slot", "name", "state", "tx", "ty",
+              "placed_at", "times_moved", "threat_timer", "shatter_at",
+              "_placed_time_accum")
+    for f in fields:
+        if getattr(a, f) != getattr(b, f):
+            return False
+    # shatter_summary: None or dataclass-equal.
+    if (a.shatter_summary is None) != (b.shatter_summary is None):
+        return False
+    if a.shatter_summary is not None and a.shatter_summary != b.shatter_summary:
+        return False
+    return True
+
+
+def test_C2_round_trip_fresh_manager_preserves_all_relics_as_available():
+    """A brand-new manager (no placements) round-trips: every relic
+    AVAILABLE, all ids stable, names preserved."""
+    mgr, cfg = _stock_mgr()
+    d = mgr.to_dict()
+    from densitas.relics import RelicManager
+    mgr2 = RelicManager.from_dict(d, cfg)
+    assert mgr2.n_factions == mgr.n_factions
+    assert mgr2.cfg.initial_count == mgr.cfg.initial_count
+    assert len(mgr2.relics) == len(mgr.relics)
+    for a, b in zip(mgr.relics, mgr2.relics):
+        assert _relics_equal(a, b), f"relic mismatch: {a} vs {b}"
+
+
+def test_C3_round_trip_after_place_move_retrieve_preserves_state():
+    """Place, move, retrieve, place again - the resulting state
+    machine + accumulators round-trip exactly. Uses _make_world
+    (all-GRASS) so every tile is walkable."""
+    from densitas.relics import RelicManager
+    mgr, cfg = _stock_mgr()
+    world = _make_world(width=32, height=24)
+    ok, _ = mgr.place(0, 0, 10, 10, world, sim_t=1.0)
+    assert ok
+    ok, _ = mgr.move(0, 0, 12, 12, world, sim_t=5.0)
+    assert ok
+    ok, _ = mgr.retrieve(0, 0, sim_t=10.0)
+    assert ok
+    ok, _ = mgr.place(0, 0, 14, 14, world, sim_t=15.0)
+    assert ok
+    mgr2 = RelicManager.from_dict(mgr.to_dict(), cfg)
+    for a, b in zip(mgr.relics, mgr2.relics):
+        assert _relics_equal(a, b), f"relic mismatch after place/move/retrieve: {a} vs {b}"
+
+
+def test_C4_round_trip_after_shatter_preserves_shatter_summary():
+    """A SHATTERED relic with a populated ShatterSummary round-trips
+    with every one of the 12 ShatterSummary fields preserved."""
+    from densitas.relics import (
+        RelicManager, RelicState, ShatterSummary,
+    )
+    mgr, cfg = _stock_mgr()
+    # Hand-craft a SHATTERED state - simpler than running the full
+    # tick loop for a unit test.
+    r = mgr.relics[0]
+    r.state = RelicState.SHATTERED
+    r.tx = 17
+    r.ty = 23
+    r.placed_at = 12.5
+    r.times_moved = 2
+    r.threat_timer = 8.0
+    r.shatter_at = 42.0
+    r._placed_time_accum = 30.0
+    r.shatter_summary = ShatterSummary(
+        relic_id=r.id, faction=0, name=r.name,
+        tx=17, ty=23, sim_t=42.0,
+        local_belief_player=1.234, local_belief_rival=2.345,
+        player_citizens_within_8=7, rival_citizens_within_8=12,
+        time_placed_total=30.0, times_moved=2,
+    )
+    mgr2 = RelicManager.from_dict(mgr.to_dict(), cfg)
+    r2 = mgr2.relics[0]
+    assert _relics_equal(r, r2)
+    assert r2.shatter_summary is not None
+    # Spot-check every field on the summary (it's the panel's data).
+    assert r2.shatter_summary == r.shatter_summary
+
+
+def test_C5_to_dict_output_is_json_dumpable():
+    """The to_dict shape must survive json.dumps without a custom
+    encoder. Otherwise the format is misnamed."""
+    from densitas.relics import RelicState, ShatterSummary
+    mgr, cfg = _stock_mgr()
+    # Make the payload nontrivial so we'd notice non-primitive leaks.
+    r = mgr.relics[0]
+    r.state = RelicState.SHATTERED
+    r.shatter_summary = ShatterSummary(
+        relic_id=r.id, faction=0, name=r.name,
+        tx=1, ty=2, sim_t=3.14,
+        local_belief_player=0.5, local_belief_rival=0.6,
+        player_citizens_within_8=1, rival_citizens_within_8=2,
+        time_placed_total=4.0, times_moved=1,
+    )
+    blob = _json.dumps(mgr.to_dict())
+    parsed = _json.loads(blob)
+    # And the parse-back is also a valid input to from_dict.
+    from densitas.relics import RelicManager
+    mgr2 = RelicManager.from_dict(parsed, cfg)
+    assert mgr2.relics[0].state == RelicState.SHATTERED
+    assert mgr2.relics[0].shatter_summary is not None
+    assert mgr2.relics[0].shatter_summary.sim_t == 3.14
+
+
+def test_C6_from_dict_rejects_unknown_version():
+    """Bumping SAVE_FORMAT_VERSION must invalidate old saves loudly,
+    not silently."""
+    from densitas.relics import RelicManager
+    mgr, cfg = _stock_mgr()
+    d = mgr.to_dict()
+    d["version"] = 999
+    with _pytest.raises(ValueError, match="unknown save version"):
+        RelicManager.from_dict(d, cfg)
+
+
+def test_C7_from_dict_rejects_initial_count_mismatch():
+    """A save built with initial_count=3 must not silently rehydrate
+    against a cfg expecting initial_count=4 - the slot layout would
+    be wrong."""
+    from densitas.relics import RelicManager
+    mgr, _ = _stock_mgr(initial_count=3)
+    d = mgr.to_dict()
+    bad_cfg = _make_relic_cfg(initial_count=4)
+    with _pytest.raises(ValueError, match="initial_count"):
+        RelicManager.from_dict(d, bad_cfg)
+
+
+def test_C8_from_dict_rejects_truncated_relic_list():
+    """If the save's `relics` list doesn't match n_factions x
+    initial_count, abort - the layout-by-index invariant would
+    otherwise break in subtle ways downstream."""
+    from densitas.relics import RelicManager
+    mgr, cfg = _stock_mgr()
+    d = mgr.to_dict()
+    d["relics"] = d["relics"][:-1]  # drop one
+    with _pytest.raises(ValueError, match="expected"):
+        RelicManager.from_dict(d, cfg)
+
+
+def test_C9_from_dict_rejects_id_formula_violation():
+    """A hand-edited save with a mismatched id field must abort,
+    since downstream code relies on id = faction * initial_count + slot."""
+    from densitas.relics import RelicManager
+    mgr, cfg = _stock_mgr()
+    d = mgr.to_dict()
+    d["relics"][0]["id"] = 999
+    with _pytest.raises(ValueError, match="id="):
+        RelicManager.from_dict(d, cfg)
