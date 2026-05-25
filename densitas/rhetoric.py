@@ -26,6 +26,14 @@ _MODE_WEIGHTS = (
 )
 
 
+class _SafeFormatDict(dict):
+    """Format-map mapping that leaves unknown {tokens} literal instead
+    of raising KeyError. Lets the JSON declare tokens the call site
+    didn't supply without crashing the scripture log."""
+    def __missing__(self, key):
+        return "{" + key + "}"
+
+
 class Rhetoric:
     """Holds the rhetoric pool and picks lines on demand.
 
@@ -47,10 +55,16 @@ class Rhetoric:
             data = json.load(f)
         return cls(data, seed=seed)
 
-    def pick(self, power_key: str, god_key: str, sim_t: float = 0.0) -> str:
+    def pick(self, power_key: str, god_key: str, sim_t: float = 0.0,
+              tokens: dict | None = None) -> str:
         """Return a scripture line. Falls through gracefully if a key
         is missing — so a brand-new power that hasn't had lines written
-        yet still gets a placeholder rather than a KeyError."""
+        yet still gets a placeholder rather than a KeyError.
+
+        If `tokens` is provided, `{name}` placeholders in the line are
+        substituted via str.format_map; unknown tokens are left literal
+        (see `_SafeFormatDict`). When `tokens` is None, the line is
+        returned verbatim — preserves pre-PR3-step-12 behavior."""
         god_pool = self._pool.get(power_key, {}).get(god_key)
         if not god_pool:
             return f"<{power_key}>"
@@ -67,10 +81,21 @@ class Rhetoric:
             line = self._rng.choice(lines)
             if line != last_line or len(lines) == 1:
                 self._last[last_key] = line
-                return line
+                return self._interpolate(line, tokens)
         # All rolls matched the last (huge dupe in pool); accept it.
         self._last[last_key] = line
-        return line
+        return self._interpolate(line, tokens)
+
+    @staticmethod
+    def _interpolate(line: str, tokens: dict | None) -> str:
+        if tokens is None:
+            return line
+        try:
+            return line.format_map(_SafeFormatDict(tokens))
+        except (ValueError, IndexError):
+            # Malformed format spec — leave the line literal rather
+            # than crash the scripture log mid-cast.
+            return line
 
     def _pick_mode(self, god_pool: dict) -> str:
         """Weighted pick. Drop modes the pool doesn't have."""

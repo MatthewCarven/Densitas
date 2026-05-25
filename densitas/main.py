@@ -443,20 +443,24 @@ def main(argv: list[str] | None = None) -> int:
                             relic_mgr.relics,
                             cfg.powers.relic.attract_radius,
                         )
-                        # Scripture: stdout placeholder for now
-                        # (step 12 wires the in-game log with the new
-                        # rhetoric.json pool keys).
+                        # PR3 step 12: scripture log emission wired with
+                        # rhetoric.json relic_placed / relic_moved /
+                        # relic_retrieved keys + {relic_name} token.
                         _key = ("relic_placed" if _mode == RelicMode.PLACE
                                 else "relic_moved" if _mode == RelicMode.MOVE
                                 else "relic_retrieved")
                         try:
+                            _relic = relic_mgr.get(_faction, _slot)
                             _line = rhet.pick(
                                 _key, _relic_god_key(_faction),
                                 sim_t=sim_time,
+                                tokens={"relic_name": _relic.name},
                             )
                             print(f"  [scripture {_key}] f{_faction}: {_line}")
                         except Exception:
-                            # Pool key missing - silent until step 12.
+                            # Pool key missing or relic lookup failed -
+                            # log loudly so we notice in dev but don't
+                            # crash the game.
                             pass
                         # Auto-advance through AVAILABLE on PLACE; stay
                         # in mode on MOVE / RETRIEVE so the player can
@@ -589,6 +593,23 @@ def main(argv: list[str] | None = None) -> int:
                         f"placed_total={_s.time_placed_total:.1f}s "
                         f"moves={_s.times_moved}"
                     )
+                    # PR3 step 12: shatter scripture. Each loss gets a
+                    # voiced line from the LOSING god's pool (the
+                    # propaganda is theirs to mourn). The numbers above
+                    # are the truth; the line below is the doctrine.
+                    try:
+                        _line = rhet.pick(
+                            "relic_shattered",
+                            _relic_god_key(_s.faction),
+                            sim_t=sim_time,
+                            tokens={"relic_name": _s.name},
+                        )
+                        print(
+                            f"  [scripture relic_shattered] "
+                            f"f{_s.faction}: {_line}"
+                        )
+                    except Exception:
+                        pass
             sim_accumulator -= tick_dt
             sim_time += tick_dt
 

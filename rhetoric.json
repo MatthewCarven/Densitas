@@ -1,5 +1,5 @@
 {
-  "_comment": "Densitas scripture pool. Keys: power -> god -> voice_mode -> [lines]. P3 PR1 ships the Open Eye block; Maw lines arrive with P4. Voice modes from GDD §10. Weights 70/20/10 (consecration / doctrinal / ritual).",
+  "_comment": "Densitas scripture pool. Keys: power -> god -> voice_mode -> [lines]. P3 PR1 shipped the Open Eye block; PR3 step 12 (2026-05-25) adds relic_moved/retrieved + Maw blocks for the 4 relic events. Voice modes from GDD §10. Weights 70/20/10 (consecration / doctrinal / ritual). Tokens: {relic_name} for relic events.",
   "inspire": {
     "open_eye": {
       "consecration": [
@@ -120,10 +120,80 @@
         "{relic_name} chooses this ground."
       ],
       "doctrinal": [
-        "Where the Witness stands, the people gather."
+        "Where the Witness stands, the people gather.",
+        "They were not astonished with which the speed the new became normal."
       ],
       "ritual": [
         "The chosen carry {relic_name} in silence."
+      ]
+    },
+    "maw": {
+      "consecration": [
+        "{relic_name} is set down. The earth opens its mouth.",
+        "{relic_name} chooses the hungry ground."
+      ],
+      "doctrinal": [
+        "The new is eaten. There is no new.",
+        "What is placed is already chewed."
+      ],
+      "ritual": [
+        "Bone is buried at the four corners of {relic_name}."
+      ]
+    }
+  },
+  "relic_moved": {
+    "open_eye": {
+      "consecration": [
+        "{relic_name} is borne to new ground.",
+        "The Witness moves its gaze; {relic_name} follows."
+      ],
+      "doctrinal": [
+        "What was seen here is now seen there; the seeing is not diminished.",
+        "The relic is moved; the witnessing is not."
+      ],
+      "ritual": [
+        "The faithful carry {relic_name} in procession."
+      ]
+    },
+    "maw": {
+      "consecration": [
+        "{relic_name} shifts. Teeth follow.",
+        "The Hungry move {relic_name} to fresher meat."
+      ],
+      "doctrinal": [
+        "Appetite does not stay where it has fed.",
+        "The mouth that does not move starves."
+      ],
+      "ritual": [
+        "{relic_name} is carried on the shoulders of the unfed."
+      ]
+    }
+  },
+  "relic_retrieved": {
+    "open_eye": {
+      "consecration": [
+        "{relic_name} is taken up.",
+        "The Witness withdraws {relic_name} from the valley."
+      ],
+      "doctrinal": [
+        "What is unobserved returns to the One who observes.",
+        "A relic at rest is not a relic abandoned."
+      ],
+      "ritual": [
+        "The chosen lift {relic_name} and turn for the high hall."
+      ]
+    },
+    "maw": {
+      "consecration": [
+        "{relic_name} is taken back into the throat.",
+        "The Maw closes around {relic_name}."
+      ],
+      "doctrinal": [
+        "What is taken back was always borrowed by the world.",
+        "Even the appetite rests."
+      ],
+      "ritual": [
+        "The hunger-pit receives {relic_name}; the priests fast."
       ]
     }
   },
@@ -140,6 +210,19 @@
       ],
       "ritual": [
         "The faithful kneel where {relic_name} stood and do not speak."
+      ]
+    },
+    "maw": {
+      "consecration": [
+        "{relic_name} is broken. The hunger is broken.",
+        "A mouth is silenced."
+      ],
+      "doctrinal": [
+        "The torture-tree is worshipped. The hammer is forgotten. Who chooses what is sacred eats first.",
+        "What cannot be eaten can still be ended."
+      ],
+      "ritual": [
+        "The fast-mouths fast for nine days where {relic_name} fell."
       ]
     }
   },
