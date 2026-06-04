@@ -1,5 +1,5 @@
 {
-  "_comment": "Densitas scripture pool. Keys: power -> god -> voice_mode -> [lines]. P3 PR1 shipped the Open Eye block; PR3 step 12 (2026-05-25) adds relic_moved/retrieved + Maw blocks for the 4 relic events. Voice modes from GDD §10. Weights 70/20/10 (consecration / doctrinal / ritual). Tokens: {relic_name} for relic events.",
+  "_comment": "Densitas scripture pool. Keys: power -> god -> voice_mode -> [lines]. P3 PR1 shipped the Open Eye block; PR3 step 12 (2026-05-25) added relic_moved/retrieved + Maw blocks for the 4 relic events. Gemini-Claude merge pass (2026-05-25) deepened curse.maw.consecration (new), bless.open_eye.doctrinal (1->8), and relic_shattered.maw.doctrinal (2->9) using comparative drafting. Voice modes from GDD section 10. Weights 70/20/10 (consecration / doctrinal / ritual). Tokens: {relic_name} for relic events.",
   "inspire": {
     "open_eye": {
       "consecration": [
@@ -89,7 +89,14 @@
         "The land is told it is loved."
       ],
       "doctrinal": [
-        "Abundance is the natural state of the well-watched."
+        "Abundance is the natural state of the well-watched.",
+        "The gaze does not create the yield; the gaze permits the yield to enter the canon.",
+        "Poverty is nothing more than a lapse in the ledger of our sight.",
+        "To be seen is the primary miracle; the bread is merely arithmetic.",
+        "We observe the harvest, and the harvest, trapped in our witnessing, has no choice but to exist.",
+        "The observed furrow does not fail; the unobserved furrow was never a furrow.",
+        "To be catalogued is to be fed; the unrecorded starve by their own invalidity.",
+        "The unobserved citizen is a mathematical error, quietly corrected by starvation."
       ],
       "ritual": [
         "The elders walk the perimeter at first light."
@@ -109,6 +116,20 @@
       ],
       "ritual": [
         "The priests turn their backs and walk on."
+      ]
+    },
+    "maw": {
+      "consecration": [
+        "The soil is instructed to swallow its own yield.",
+        "A fast is commanded upon their boundary.",
+        "Their harvest meets teeth before the sickle.",
+        "The ground is given a mouth to consume their belief.",
+        "The rival's earth eats the seed so the farmer cannot.",
+        "Mouths open in the rival's furrows.",
+        "We strip the bone from the Other's earth.",
+        "What was planted is digested in the dark.",
+        "Their harvest is recalled to the stomach of the world.",
+        "The rival's earth opens its mouth."
       ]
     }
   },
@@ -219,7 +240,14 @@
       ],
       "doctrinal": [
         "The torture-tree is worshipped. The hammer is forgotten. Who chooses what is sacred eats first.",
-        "What cannot be eaten can still be ended."
+        "What cannot be eaten can still be ended.",
+        "The idol is broken so the shards may be swallowed. Digestion requires smaller pieces.",
+        "What they shatter, they name an enemy. What they name an enemy, they feed with their attention.",
+        "A sacred thing is only a bone waiting for a heavy enough jaw. The snapping sound is the ritual.",
+        "They destroy the stone because they cannot starve the idea. The stomach laughs at the hammer.",
+        "The altar falls, but the architecture was always just a napkin. The appetite remains.",
+        "The mouth that breaks the relic is taught to be sacred. The mouth is forgotten by morning.",
+        "Every martyr is a meal whose name we keep saying."
       ],
       "ritual": [
         "The fast-mouths fast for nine days where {relic_name} fell."
