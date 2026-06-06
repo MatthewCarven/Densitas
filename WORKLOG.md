@@ -1,3 +1,44 @@
+## 2026-05-25 (PR3 step 12) — Rhetoric pool wired for relic events
+
+PR3 closes. The propaganda layer for the relic lifecycle is live: every place / move / retrieve / shatter event now emits a voiced scripture line from the acting god's pool instead of the stdout placeholder.
+
+**Discovery on session start.** Memory said "step 12 emits stdout placeholders" but the engine was already mostly in place — `densitas/rhetoric.py` had a full `Rhetoric` class with weighted mode pick + no-immediate-repeat, `rhetoric.json` already had Open Eye blocks for 9 power keys including `relic_placed` and `relic_shattered`, and `main.py` already called `rhet.pick(_key, _relic_god_key(_faction), sim_t=sim_time)` for placed/moved/retrieved. The actual gaps were narrower than the memory suggested.
+
+**What was actually missing:**
+
+1. `relic_moved` and `relic_retrieved` keys absent from rhetoric.json — main.py asked for them, pick() returned the `<placeholder>` fallback every time.
+2. Maw blocks missing from all four relic events. JSON's own comment said "Maw lines arrive with P4" but step 12's scope wants them now.
+3. Shatter scripture not wired in main.py — `relic_shattered` JSON cell existed but no caller; the shatter loop only printed stats.
+4. `{relic_name}` token interpolation unimplemented — JSON had literal `{relic_name}` placeholders that pick() returned as-is.
+
+**What landed:**
+
+- `densitas/rhetoric.py` — `_SafeFormatDict` class (subclasses `dict`, `__missing__` returns `"{" + key + "}"` so unknown tokens stay literal). `pick()` gains a `tokens: dict | None = None` kwarg; when provided, the line runs through `str.format_map(_SafeFormatDict(tokens))`. New `_interpolate()` static method handles the None / present / malformed-spec branches (malformed swallowed, line returned verbatim). Backward-compatible: every existing call site that omits `tokens` keeps working.
+- `rhetoric.json` — 161 → 244 lines. Added `relic_moved` and `relic_retrieved` top-level keys. Added `maw` blocks to all four `relic_*` events. Each new cell ships 2 consecration / 2 doctrinal / 1 ritual line as a sparse starter (spec calls for 10-20 per cell long-term; deferred). The 3 workshopped doctrinal lines from chat are slotted into their cells:
+    - "They were not astonished with which the speed the new became normal." → `relic_placed.open_eye.doctrinal`
+    - "The new is eaten. There is no new." → `relic_placed.maw.doctrinal`
+    - "The torture-tree is worshipped. The hammer is forgotten. Who chooses what is sacred eats first." → `relic_shattered.maw.doctrinal`
+- `densitas/main.py` — placed/moved/retrieved call updated: `_relic = relic_mgr.get(_faction, _slot)` lookup + `tokens={"relic_name": _relic.name}` so `{relic_name}` resolves. New shatter-loop scripture emission: after the existing stats print for each `ShatterSummary`, a `rhet.pick("relic_shattered", _relic_god_key(_s.faction), tokens={"relic_name": _s.name})` call drops a voiced line. The losing god mourns its own relic — the numbers above are the truth, the line below is the doctrine.
+- `tests/test_rhetoric.py` — new file, 214 lines, 16 tests:
+    - A1-A6 token interpolation safety (substitution, no-tokens backward compat, unknown-token literal, SafeFormatDict semantics, malformed-format graceful path).
+    - B1-B3 all 4 relic events × 2 gods × 3 modes return a real line (no `<placeholder>`, no empty strings).
+    - C1-C3 banked doctrinal lines present in their assigned cells.
+    - D1-D2 no-immediate-repeat rule survives interpolation; single-line pools repeat silently per docstring.
+    - E1 weighted-mode pick stays within 3 percentage points of spec 70/20/10 over 20,000 samples.
+    - F1 deterministic same-seed → same sequence.
+
+**Test results:** 193 → 209 tests, all pass headlessly. Headless main loads "rhetoric pool ready (13 power keys)", exits 0.
+
+**Commit pipeline.** Per [[feedback-densitas-cmd-bundling]], `commit_relics_step12.cmd` does explicit `git add` of the four step-12 files only — build.cmd / start.cmd CRLF noise, NamesGenerator/, and leftover step 7/9 amend artifacts deliberately stay out. Pre-flight asserts HEAD = `afa20f3`. Lands as a single clean commit.
+
+**Mount casualty log.** Edit truncated `densitas/main.py` (lost ~24 lines mid-Edit, file ended mid-f-string at line 770) and `densitas/rhetoric.py` (lost `_pick_mode` + `make_picker`, file ended at 88 lines instead of 117) — in both `/outputs/` and the project mount. The Read tool's view showed the intended full content while disk was truncated; trust `wc -l` and `ast.parse`, not Read. Recovery: bash `python3 << 'PYEOF'` heredoc with `src.replace(old, new)` and `assert src.count(old) == 1` guards, write to `/outputs`, `cp` + `sync` + `mv` + `sync` into mount with SHA round-trip verification. The bash-stage path landed cleanly on first try for both files.
+
+**PR3 is closed.** Relic lifecycle ships end-to-end: placement, belief contribution, citizen attractors, shatter rule, on-map animation, HUD tray, summary panel, R-key input, save/load round-trip, AND propaganda voice. The relics-system spec (`Densitas_relics.md`) is fully implemented modulo the long-tail line-writing (each cell wants 10-20 lines eventually; ships with 5).
+
+**Up next:** P4 candidates from prior memory — citizen state machine fully ($P_1) was the original next-pass target, or rival-god AI personalities, or fog-of-war (P2.5 in the design doc). With PR3's propaganda layer in, AI personalities feel like the next thing that would *show*.
+
+---
+
 ## 2026-05-22 (P3-Brush) — Bulk Raise/Lower with N×N click footprint
 
 Playtest reaction to PR2 (Cast Queue): single-tile Raise/Lower is too slow when you're trying to terraform a coastline or pull up a plateau. Added a brush-size modifier (`+`/`-`) that expands one click into an N×N square. Side length 1-4 means 1, 4, 9, or 16 tiles per click. Zero spec churn — this is a playtest-driven tweak, lives in the worklog rather than P3.md.
