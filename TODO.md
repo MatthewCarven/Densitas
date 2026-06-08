@@ -6,7 +6,7 @@
 - [x] ~~Spec the citizen state machine~~ — done 2026-05-20 in `Densitas_citizens.md`.
 - [x] ~~Define the belief-field math precisely~~ — done 2026-05-21 in `Densitas_belief.md`.
 - [x] ~~Spec food/forage/hunger~~ — done 2026-05-21 in `Densitas_food.md`. Tile-attribute food, hunger gate, FORAGE/EATING transitions, starvation, DYING-fades-belief.
-- [ ] Spec the rival god AI for each personality (Zealot / Steward / Trickster): decision loop, target selection, when to spend belief vs hoard.
+- [x] ~~Spec the rival god AI for each personality (Zealot / Steward / Trickster): decision loop, target selection, when to spend belief vs hoard.~~ — done 2026-06-07: `Densitas_rival_ai.md` (PR4 spec; Zealot live, Steward/Trickster blocks specced).
 - [ ] Define terrain generation: ~~heightmap method~~ (done), biome derivation rules (done), starting-position fairness (open). (Raise/Lower mutation pipeline shipped P3 PR2.)
 - [ ] **Relic spec.** Placement UI (drag from tray? click on map?), visual representation, the shattering animation/sound, retrieval flow.
 - [ ] **Relic-shatter summary screen.** When a relic shatters, show: god, relic name, tile, local-belief at shatter, # of player citizens within 8 tiles, # of rival citizens within 8 tiles, time-since-placed, # of times moved.
@@ -151,6 +151,8 @@
 - [ ] Scripture log: rhetoric pool wired up; per-cast line picked from `(power, god, mode)` JSON.
 
 ## Prototype P4 — Rival god AI
+
+Spec: **`Densitas_rival_ai.md`** (2026-06-07) — conversion + rival AI in one PR, 8 commit-sized steps. Items below are covered by spec steps 1-8.
 - [ ] Rival faction citizens spawn from rival starting point.
 - [ ] Three personality decision loops (Zealot / Steward / Trickster).
 - [ ] Belief field per faction; conflict where they overlap (already plumbed in P2).

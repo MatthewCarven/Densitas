@@ -1047,3 +1047,64 @@ placeholders for all four; step 12 wires real scripture lines from
 the propaganda pool.
 
 Lands via `commit_relics_step13.cmd`.
+
+---
+
+## 2026-06-07 — PR4 spec: conversion + rival god AI
+
+*(Catch-up first: two changesets that landed in git but never made the log.)*
+
+**2026-05-25 — PR3 step 12 (`1faa414`).** Rhetoric pool wired for relic
+events. `_SafeFormatDict` + `tokens=` interpolation on `Rhetoric.pick`
+(`{relic_name}`); rhetoric.json 161 -> 244 lines (relic_moved /
+relic_retrieved keys + Maw blocks across the four relic events); shatter
+scripture wired in main.py; `tests/test_rhetoric.py` new — 16 tests,
+193 -> 209. **PR3 complete end-to-end.**
+
+**2026-06-04 — rhetoric deepening (`ae46751`).** Gemini-Claude comparative
+merge: `curse.maw.consecration` new, `bless.open_eye.doctrinal` 1 -> 8,
+`relic_shattered.maw.doctrinal` 2 -> 9. Single-file commit (rhetoric.json).
+Pushed 2026-06-07 with the `b922d7d` "Updated worklow" commit — origin is current.
+
+**Today — `Densitas_rival_ai.md` v0.1.** Scope confirmed with Matthew:
+conversion lands in the same PR (the AI needs something real to fight
+over); framework for three personalities with **Zealot live** and
+Steward/Trickster blocks specced but honestly inert until T2/T3 powers
+exist; personality **config-selectable** (`[rival] personality`) — the
+god is the skin, the personality is the brain, scripture voice follows
+the god.
+
+Spec highlights:
+
+- **Faith stat:** `dominance = B_riv / (B_riv + B_own + eps)`; drain ramps
+  linearly past parity; regen requires standing in your *own* field, so
+  the empty wilderness neither drains nor heals. Despair is checked
+  before convert; convert additionally gates on `min_convert_belief` —
+  that gate is what makes despair reachable (nothing to convert *to*).
+- **CONVERTED:** 1.5 sim_s ceremony with an abort path; the flip itself is
+  free accounting-wise — population, belief scatter, attractor sync, and
+  sprite palette all key off `c.faction` already.
+- **AI loop:** one utility-scored intent pick per decision tick
+  (`ai_base_period / difficulty`, default 2.0 sim_s — cadence is the
+  *only* difficulty knob, per GDD §7). Senses are numpy ops over existing
+  grids. Seeded rng + a 64-deep decision ring for determinism tests and
+  `--ai-debug`.
+- **Same-rules is structural:** the AI acts only through `cast_or_queue`
+  and relic `place/move/retrieve`; a property test asserts every action
+  passed `can_cast == True`. `GOD_FORBIDS` mask keeps the Maw from ever
+  blessing regardless of personality weights.
+- **Found while speccing:** (a) tier high-water-mark discrepancy — GDD §5
+  says tiers persist, `can_cast` recomputes from live population;
+  conversion makes population drops routine, so this becomes visible.
+  Flagged in spec §14, deliberately not fixed in PR4. (b) rhetoric.json
+  audit: Maw cells exist only for `curse` + relic events —
+  `hunger_pang.maw` / `lower.maw` would placeholder-fallthrough the
+  moment the AI starts casting. Gap-fill is spec step 7 (line co-write).
+- **Round setup changes:** rival spawn default-on at (0.75, 0.5);
+  hardcoded six seed relics removed behind `--seed-relics`;
+  `--rival-stub-seed` deprecated to an alias.
+
+8-step commit plan in spec §13 with a headless acceptance run (600 sim_s
+x3: rival places >= 2 relics, casts >= 10, converts >= 5). Step 1's
+pre-flight expects HEAD `b922d7d`. Spec itself lands via
+`commit_pr4_spec.cmd`, which also pushes the new spec commit (origin was already current at `b922d7d`).
