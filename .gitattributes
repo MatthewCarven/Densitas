@@ -1,0 +1,7 @@
+# Densitas line-ending policy.
+# The editing-environment mount rewrites .cmd files to CRLF while they are
+# stored LF in the repo, which produced perpetual "modified" churn on
+# build.cmd / start.cmd. Pin Windows batch scripts to CRLF in the working
+# tree, LF in the repo, so the churn stops for good.
+*.cmd text eol=crlf
+*.bat text eol=crlf

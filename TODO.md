@@ -8,8 +8,8 @@
 - [x] ~~Spec food/forage/hunger~~ — done 2026-05-21 in `Densitas_food.md`. Tile-attribute food, hunger gate, FORAGE/EATING transitions, starvation, DYING-fades-belief.
 - [x] ~~Spec the rival god AI for each personality (Zealot / Steward / Trickster): decision loop, target selection, when to spend belief vs hoard.~~ — done 2026-06-07: `Densitas_rival_ai.md` (PR4 spec; Zealot live, Steward/Trickster blocks specced).
 - [ ] Define terrain generation: ~~heightmap method~~ (done), biome derivation rules (done), starting-position fairness (open). (Raise/Lower mutation pipeline shipped P3 PR2.)
-- [ ] **Relic spec.** Placement UI (drag from tray? click on map?), visual representation, the shattering animation/sound, retrieval flow.
-- [ ] **Relic-shatter summary screen.** When a relic shatters, show: god, relic name, tile, local-belief at shatter, # of player citizens within 8 tiles, # of rival citizens within 8 tiles, time-since-placed, # of times moved.
+- [x] ~~**Relic spec.**~~ Placement UI (drag from tray? click on map?), visual representation, the shattering animation/sound, retrieval flow.
+- [x] ~~**Relic-shatter summary screen.**~~ When a relic shatters, show: god, relic name, tile, local-belief at shatter, # of player citizens within 8 tiles, # of rival citizens within 8 tiles, time-since-placed, # of times moved.
 - [ ] **Rhetoric pool expansion.** Write 6-10 lines per power per voice mode.
 - [x] ~~Config schema — citizen / belief / food~~ — done 2026-05-20 / 2026-05-21.
 - [ ] **Food tuning iteration.** Default tuning lands equilibrium at ~700-1000 citizens. T3 (1000 threshold) sits *at* the edge — sustained survival reaches it but the curve is slow. If playtest feels T3 too hard, bump biome regens 1.5x OR drop hunger_rate 0.05 -> 0.04. The P3 holy-site / relic boost is the intended path to T3+ via richer local food.
@@ -19,7 +19,7 @@
 - [ ] **VectorRenderer** — implement the alternative draw style. Same `build_world_surface` / `blit_viewport` / `blit_citizens` / `blit_belief_overlay` / `blit_food_overlay` contract.
 - [x] ~~Citizen icon resolution~~ — 16-tall pixel humanoid (8 wide).
 - [x] ~~**Citizen sprite set**~~ — done 2026-05-20. 8x16 humanoid x 2 factions x 4 facings x 3 frames.
-- [ ] **Relic sprite placement on map.** The pixel-art glyphs from `Densitas_relic_glyphs_v1.html` get blitted at 16-24 px on the tile they occupy.
+- [x] ~~**Relic sprite placement on map.**~~ The pixel-art glyphs from `Densitas_relic_glyphs_v1.html` get blitted at 16-24 px on the tile they occupy.
 - [x] ~~**Death-frame sprite.**~~ — done 2026-05-21. Alpha-fade rather than a new sprite; cheaper and pairs with the existing belief-fade smoothly.
 - [x] ~~**EATING frame.**~~ — done 2026-05-21. 4th frame per (faction, facing) with the mouth-outline pixels suppressed; renderer cycles 0 ↔ 3 every 0.4 sim sec.
 - [ ] Final HUD pass: settings menu, pause menu, end-of-round screen.
@@ -118,15 +118,15 @@
 - [x] 2 new tests (`test_32`, `test_33`) — 89 total. Both cover the immediate path + queue-drain path + invalid-tile fallback under suppression.
 - [x] Debug overlay shows `Raise brush 4x4 (16t)` + `+/- brush (R/L)` help.
 
-## Prototype P3 PR3 — Religious Relics
-- [ ] `densitas/relics.py` — `Relic`, `RelicManager`, `RelicState` (AVAILABLE/PLACED/SHATTERED).
-- [ ] `BeliefField.recompute(citizens, relics=None, sim_t=0.0)` + `_scatter_relics` with linear fade-in over place_cooldown.
-- [ ] Citizen attractor list + `_pick_wander_target` integration (~40% probability, hunger trumps).
-- [ ] Shatter rule: rival belief > 1.5x player belief sustained for 8 sec at the tile.
-- [ ] Tray UI in HUD (3 slots; AVAILABLE/PLACED/SHATTERED states).
-- [ ] `R` / `Shift+R` mode select; click to place/move/retrieve.
-- [ ] `blit_relics(screen, relics, cam_x, cam_y)` using the existing `Densitas_relic_glyphs_v1.html` glyphs.
-- [ ] 10 P3 PR3 tests (spec §12 #19-28).
+## Prototype P3 PR3 — Religious Relics (SHIPPED 2026-05-25)
+- [x] `densitas/relics.py` — `Relic`, `RelicManager`, `RelicState` (AVAILABLE/PLACED/SHATTERED).
+- [x] `BeliefField.recompute(citizens, relics=None, sim_t=0.0)` + `_scatter_relics` with linear fade-in over place_cooldown.
+- [x] Citizen attractor list + `_pick_wander_target` integration (~40% probability, hunger trumps).
+- [x] Shatter rule: rival belief > 1.5x player belief sustained for 8 sec at the tile.
+- [x] Tray UI in HUD (3 slots; AVAILABLE/PLACED/SHATTERED states).
+- [x] `R` / `Shift+R` mode select; click to place/move/retrieve.
+- [x] `blit_relics(screen, relics, cam_x, cam_y)` using the existing `Densitas_relic_glyphs_v1.html` glyphs.
+- [x] 10 P3 PR3 tests (spec §12 #19-28).
 
 ## Prototype P3.5 — Spring + Curse-flight
 - [ ] Spring (T1) — fresh-water tile sub-type increasing adjacent carrying capacity.
