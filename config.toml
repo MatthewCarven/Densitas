@@ -37,6 +37,18 @@ wander_radius       = 6
 wander_speed        = 1.0
 tick_hz             = 5
 
+[citizen.faith]
+# PR4 - conversion stat (Densitas_rival_ai.md SS2, SS11). Opening bids.
+drain_rate          = 0.08   # faith/sim_s under total rival dominance
+regen_rate          = 0.04   # faith/sim_s deep in your own field
+regen_ref           = 0.50   # belief level giving full-rate regen
+convert_threshold   = 0.30
+despair_threshold   = 0.05
+min_convert_belief  = 0.05   # receiving field must be at least this
+ceremony_duration   = 1.5    # sim_s standing in CONVERTED
+convert_faith_reset = 0.60   # converts restart shaky
+scripture_coalesce_window = 5.0
+
 [belief]
 grid_w            = 64
 grid_h            = 48

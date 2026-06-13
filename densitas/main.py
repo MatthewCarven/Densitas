@@ -555,7 +555,10 @@ def main(argv: list[str] | None = None) -> int:
                 citizen_mgr, world, food, belief, sim_time,
             )
             food.recompute(tick_dt, effects=power_system.effects)
-            citizen_mgr.tick(tick_dt, world, food)
+            # PR4 step 1: belief passed in for the faith update. Citizens
+            # read the PREVIOUS tick's field (recompute runs just below) -
+            # a one-tick lag the 5 Hz cadence absorbs invisibly.
+            citizen_mgr.tick(tick_dt, world, food, belief=belief)
             # PR3 step 2: pass the live relic list + current sim_t so
             # each PLACED relic contributes amplitude * min(1.0,
             # (sim_t - placed_at) / place_cooldown) to its belief cell.

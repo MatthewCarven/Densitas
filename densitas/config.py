@@ -44,6 +44,27 @@ class CameraConfig:
 
 
 @dataclass(frozen=True)
+class FaithConfig:
+    """PR4 step 1: the conversion stat (`Densitas_rival_ai.md` §2, §11).
+
+    Defaults are the spec's opening bids; every value is a playtest
+    knob. `ceremony_duration`, the thresholds, `convert_faith_reset`
+    and `scripture_coalesce_window` are consumed by later PR4 steps -
+    they land here so the `[citizen.faith]` block is complete from
+    step 1.
+    """
+    drain_rate:          float = 0.08  # faith/sim_s under total rival dominance
+    regen_rate:          float = 0.04  # faith/sim_s deep in your own field
+    regen_ref:           float = 0.50  # belief level giving full-rate regen
+    convert_threshold:   float = 0.30
+    despair_threshold:   float = 0.05
+    min_convert_belief:  float = 0.05  # receiving field must be at least this
+    ceremony_duration:   float = 1.5   # sim_s standing in CONVERTED
+    convert_faith_reset: float = 0.60
+    scripture_coalesce_window: float = 5.0
+
+
+@dataclass(frozen=True)
 class CitizenConfig:
     # Population & lifecycle
     initial_population: int
@@ -62,6 +83,10 @@ class CitizenConfig:
     wander_speed: float
     # Tick
     tick_hz: int
+    # PR4 step 1: faith / conversion knobs. Optional for P1-P3
+    # backward-compat (same pattern as CitizenManager's food_cfg):
+    # when None, the faith update is disabled entirely.
+    faith: "FaithConfig | None" = None
 
 
 @dataclass(frozen=True)
@@ -177,11 +202,14 @@ def load(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
     # Normalise list -> tuple for k_tier.
     powers_raw["k_tier"] = tuple(float(x) for x in powers_raw["k_tier"])
 
+    citizen_raw = dict(raw["citizen"])
+    faith_raw = citizen_raw.pop("faith")
+
     return Config(
         world=WorldConfig(**raw["world"]),
         render=RenderConfig(**raw["render"]),
         camera=CameraConfig(**raw["camera"]),
-        citizen=CitizenConfig(**raw["citizen"]),
+        citizen=CitizenConfig(faith=FaithConfig(**faith_raw), **citizen_raw),
         belief=BeliefConfig(**raw["belief"]),
         food=FoodConfig(biome=FoodBiomeConfig(**biome_raw), **food_raw),
         powers=PowerConfig(relic=RelicConfig(**relic_raw), **powers_raw),

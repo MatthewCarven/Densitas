@@ -39,6 +39,7 @@ from .config import CitizenConfig, FoodConfig
 
 if TYPE_CHECKING:
     from .food import FoodField
+    from .belief import BeliefField
 
 
 # Tiles a citizen can stand on / walk through.
@@ -117,6 +118,8 @@ class Citizen:
     inspire_bias_until: float = -1.0  # sim_t below which the citizen pursues an Inspire target
     # --- P1-polish additions ---
     dying_fade: float = 1.0           # 1.0 alive -> 0.0 fully faded; renderer modulates alpha
+    # --- PR4 step 1 additions ---
+    faith: float = 1.0                # 0.0 faithless -> 1.0 devoted; drains under rival belief
 
 
 class CitizenManager:
@@ -190,17 +193,25 @@ class CitizenManager:
         return (fed, hungry, starving, avg)
 
     def tick(self, dt: float, world: World,
-              food: "FoodField | None" = None) -> None:
+              food: "FoodField | None" = None,
+              belief: "BeliefField | None" = None) -> None:
         """Advance the sim by `dt` sim-seconds. Single tick at 5 Hz = 0.2s.
 
         `food` is optional (P1 backward-compat): when None, hunger and
         forage/eating are disabled and the manager behaves as in P1.
+
+        `belief` is optional (PR4 step 1): when provided alongside
+        `cfg.faith`, each citizen's faith drains under rival belief
+        dominance and regens inside their own god's field (spec
+        `Densitas_rival_ai.md` §2.2). Anything exposing
+        `query(tx, ty, faction) -> float` works - tests pass stubs.
         """
         self._sim_t += dt
         new_citizens: list[Citizen] = []
         dead_idx: list[int] = []
         cfg = self.cfg
         fc = self.food_cfg
+        fa = cfg.faith if belief is not None else None
 
         # Pre-build a coarse spatial index for mate-finding.
         spatial: dict[tuple[int, int], list[int]] = {}
@@ -212,6 +223,29 @@ class CitizenManager:
             c.age += dt
             if c.repro_cd > 0.0:
                 c.repro_cd = max(0.0, c.repro_cd - dt)
+
+            # PR4 step 1: faith drain/regen (spec §2.2). Applies in every
+            # state - §2.3 exempts DYING/MATE from the *transition* checks
+            # (step 2), not from the update itself. Two O(1) queries.
+            if fa is not None:
+                _tx, _ty = int(c.x), int(c.y)
+                b_own = belief.query(_tx, _ty, faction=c.faction)
+                b_riv = belief.query(_tx, _ty, faction=1 - c.faction)
+                dom = b_riv / (b_riv + b_own + 1e-6)
+                if dom > 0.5:
+                    # Linear ramp: zero at parity, full rate under total
+                    # rival dominance.
+                    c.faith -= fa.drain_rate * (2.0 * dom - 1.0) * dt
+                elif dom < 0.5:
+                    # Regen only inside your own actual field: the
+                    # B_own/regen_ref factor freezes faith in the empty
+                    # wilderness (no death spirals, no free healing).
+                    c.faith += (fa.regen_rate * (1.0 - 2.0 * dom)
+                                * min(1.0, b_own / fa.regen_ref) * dt)
+                if c.faith < 0.0:
+                    c.faith = 0.0
+                elif c.faith > 1.0:
+                    c.faith = 1.0
 
             # Hunger accrual (everywhere except DYING, where the body shuts down).
             if fc is not None and food is not None and c.state != CitizenState.DYING:
@@ -550,6 +584,7 @@ class CitizenManager:
             hunger=self._initial_hunger(),
             food_carried=0,
             inspire_bias_until=-1.0,
+            faith=1.0,
         )
 
     def _pick_wander_target(self, c: Citizen, world: World) -> tuple[float, float]:

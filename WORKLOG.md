@@ -1108,3 +1108,48 @@ Spec highlights:
 x3: rival places >= 2 relics, casts >= 10, converts >= 5). Step 1's
 pre-flight expects HEAD `b922d7d`. Spec itself lands via
 `commit_pr4_spec.cmd`, which also pushes the new spec commit (origin was already current at `b922d7d`).
+
+---
+
+## 2026-06-11 — PR4 step 1: faith field + drain/regen + config
+
+Spec: `Densitas_rival_ai.md` §2.1-2.2, §11, §12-A, §13 step 1.
+
+- `densitas/config.py` — `FaithConfig` frozen dataclass (9 knobs, spec
+  defaults as field defaults so tests can `FaithConfig()`); optional
+  `CitizenConfig.faith` field (None = faith disabled, same pattern as
+  `food_cfg`); `load()` pops the `[citizen.faith]` subtable.
+- `config.toml` — `[citizen.faith]` block, spec §11 opening bids
+  verbatim. The full block lands now (ceremony/convert/coalesce knobs
+  included) even though steps 2+ consume most of it — one config
+  commit, not four.
+- `densitas/citizen.py` — `Citizen.faith: float = 1.0`; `tick()` grows
+  an optional `belief=` kwarg (duck-typed: anything with
+  `query(tx, ty, faction)`); per-citizen update placed in the
+  every-state block right after aging, so faith drains in DYING and
+  MATE too (§2.3 exempts those states from the *transition* checks,
+  which are step 2 — not from the update). Drain
+  `drain_rate * (2*dom - 1) * dt` past parity; regen
+  `regen_rate * (1 - 2*dom) * min(1, B_own/regen_ref) * dt` below it;
+  clamp [0, 1]. Eps guard makes the void a no-op in both directions.
+  `enemy(f)` is `1 - f` — fine until n_factions > 2, which is
+  Stretch/never territory.
+- `densitas/main.py` — `citizen_mgr.tick(..., belief=belief)`.
+  Citizens read the previous tick's field (recompute runs just after);
+  one-tick lag at 5 Hz, invisible.
+- `tests/test_faith.py` — group A, 6 tests against a two-constant
+  `StubBelief`: parity no-change, linear drain ramp (2:1 dominance ⇒
+  2:1 drop), regen-requires-own-field (void frozen / full-rate at
+  regen_ref / half-rate at regen_ref/2), [0,1] clamps, eps guards,
+  MATE-drain-continues.
+
+**Tests:** 215 / 215 headless (209 + 6), `SDL_VIDEODRIVER=dummy`,
+`--assert=plain`. `py_compile` clean on the three touched modules.
+Headless `main()` boot smoke returns 0 with the new config block.
+Integration spot-check: real `BeliefField`, rival stub relocated onto
+the player cluster, 100 ticks — both factions' faith drains in the
+contested zone, everything stays in [0, 1].
+
+Lands via `commit_pr4_step1.cmd` (pre-flight expects HEAD `64db313` —
+the spec said "the spec commit" but the EOL-tidy commit landed after
+it; the pre-flight tracks reality).
