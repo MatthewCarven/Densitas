@@ -6,8 +6,8 @@ Six tests, no display required:
   A3. regen requires own field (void ⇒ frozen faith; own field ⇒ regen)
   A4. clamps at [0, 1]
   A5. eps guards (both fields zero — no NaN, no drift)
-  A6. drain continues during MATE (the transition checks are step 2;
-      here we assert only that the update itself never pauses)
+  A6. drain continues during MATE (the step-2 transition checks exempt
+      MATE; the update itself never pauses)
 
 The belief field is duck-typed in `CitizenManager.tick` — anything with
 `query(tx, ty, faction) -> float` works — so these tests drive the math
@@ -193,7 +193,7 @@ def test_drain_continues_during_mate():
     fa = FaithConfig()
     # dom ≈ 1.0 → full drain_rate for 5 ticks.
     expected = 0.8 - fa.drain_rate * 1.0 * DT * 5
-    assert c.state == CitizenState.MATE  # no transition machinery yet (step 2)
+    assert c.state == CitizenState.MATE  # §2.3 exempts MATE from transitions
     assert math.isclose(c.faith, expected, rel_tol=1e-3)
 
 

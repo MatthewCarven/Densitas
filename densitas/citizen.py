@@ -22,6 +22,10 @@ P3 PR1 adds two CitizenManager hooks the PowerSystem calls:
   * `spawn_rival_stub(seed, n)` — debug-flag entry point for live-play
     testing of multi-faction codepaths before P4.
 
+PR4 step 2 activates CONVERTED: faith thresholds (spec §2.3) send a
+citizen to despair (DYING, cause tag "despair") or into the conversion
+ceremony, and the ceremony flips their faction on completion.
+
 P3 PR2 adds the drown rule:
   * `drown_at(tx, ty, dying_duration)` — Raise/Lower invokes this when
     the mutated tile becomes unwalkable; every live citizen on that
@@ -73,8 +77,9 @@ def tier_for(population: int) -> tuple[str, int]:
 
 
 class CitizenState(enum.IntEnum):
-    """States in the citizen FSM. P1.5 activates FORAGE and EATING.
-    SLEEP/FLEE/CONVERTED remain placeholders for later milestones.
+    """States in the citizen FSM. P1.5 activates FORAGE and EATING,
+    PR4 step 2 activates CONVERTED. SLEEP/FLEE remain placeholders for
+    later milestones.
     """
     IDLE      = 0
     WANDER    = 1
@@ -120,6 +125,8 @@ class Citizen:
     dying_fade: float = 1.0           # 1.0 alive -> 0.0 fully faded; renderer modulates alpha
     # --- PR4 step 1 additions ---
     faith: float = 1.0                # 0.0 faithless -> 1.0 devoted; drains under rival belief
+    # --- PR4 step 2 additions ---
+    death_cause: str = ""             # "" until DYING; then age / starvation / drown / despair
 
 
 class CitizenManager:
@@ -200,11 +207,13 @@ class CitizenManager:
         `food` is optional (P1 backward-compat): when None, hunger and
         forage/eating are disabled and the manager behaves as in P1.
 
-        `belief` is optional (PR4 step 1): when provided alongside
+        `belief` is optional (PR4 step 1/2): when provided alongside
         `cfg.faith`, each citizen's faith drains under rival belief
         dominance and regens inside their own god's field (spec
         `Densitas_rival_ai.md` §2.2). Anything exposing
         `query(tx, ty, faction) -> float` works - tests pass stubs.
+        PR4 step 2 adds the §2.3 threshold checks on top of that update:
+        despair -> DYING, or convert -> CONVERTED and the faction flip.
         """
         self._sim_t += dt
         new_citizens: list[Citizen] = []
@@ -227,6 +236,7 @@ class CitizenManager:
             # PR4 step 1: faith drain/regen (spec §2.2). Applies in every
             # state - §2.3 exempts DYING/MATE from the *transition* checks
             # (step 2), not from the update itself. Two O(1) queries.
+            b_riv = 0.0
             if fa is not None:
                 _tx, _ty = int(c.x), int(c.y)
                 b_own = belief.query(_tx, _ty, faction=c.faction)
@@ -247,6 +257,32 @@ class CitizenManager:
                 elif c.faith > 1.0:
                     c.faith = 1.0
 
+                # PR4 step 2: threshold checks (spec §2.3), in this order
+                # - despair first, then convert. DYING is already gone and
+                # MATE is mid-ceremony (mercy rule; also avoids a
+                # half-flipped pair), so both defer the *transition* - the
+                # drain above still applied to them.
+                if c.state not in (CitizenState.DYING, CitizenState.MATE):
+                    if c.faith <= fa.despair_threshold:
+                        # Faith collapsed with no god strong enough to
+                        # receive them. Existing death path, cause tag for
+                        # the log/summary.
+                        c.state = CitizenState.DYING
+                        c.state_timer = cfg.dying_duration
+                        c.death_cause = "despair"
+                        continue
+                    if (c.state != CitizenState.CONVERTED
+                            and c.faith <= fa.convert_threshold
+                            and b_riv >= fa.min_convert_belief):
+                        # The receiving-field gate is what makes despair
+                        # reachable: in a contested-but-weak zone there is
+                        # nothing to convert *to*.
+                        c.state = CitizenState.CONVERTED
+                        c.state_timer = fa.ceremony_duration
+                        # No `continue` - hunger/starvation still apply
+                        # during the ceremony, and the CONVERTED row below
+                        # picks it up on this same tick.
+
             # Hunger accrual (everywhere except DYING, where the body shuts down).
             if fc is not None and food is not None and c.state != CitizenState.DYING:
                 c.hunger += fc.hunger_rate * dt
@@ -258,12 +294,14 @@ class CitizenManager:
                 if c.state != CitizenState.DYING and c.hunger >= fc.starve_hunger:
                     c.state = CitizenState.DYING
                     c.state_timer = cfg.dying_duration
+                    c.death_cause = "starvation"
                     continue
 
             # Lifespan check - preempts everything except already-dying.
             if c.state != CitizenState.DYING and c.age >= c.lifespan:
                 c.state = CitizenState.DYING
                 c.state_timer = cfg.dying_duration
+                c.death_cause = "age"
                 continue
 
             if c.state == CitizenState.DYING:
@@ -279,6 +317,43 @@ class CitizenManager:
                 c.state_timer -= dt
                 if c.state_timer <= 0.0:
                     c.state = CitizenState.IDLE
+                continue
+
+            if c.state == CitizenState.CONVERTED:
+                # PR4 step 2 (spec §3). The citizen stands still for the
+                # ceremony - the moment of apostasy is visible on the map
+                # (the renderer pulses the receiving faction's accent
+                # colour around them).
+                if fa is None:
+                    # Nothing is driving the ceremony (no faith config /
+                    # no belief field). Bail out rather than stand forever.
+                    c.state = CitizenState.IDLE
+                    c.state_timer = 0.0
+                    continue
+                if b_riv < fa.min_convert_belief:
+                    # Abort: their new god lost the ground under them.
+                    # Faith stays where it is - they will likely re-enter
+                    # CONVERTED, or slide on to despair.
+                    c.state = CitizenState.IDLE
+                    c.state_timer = 0.0
+                    continue
+                c.state_timer -= dt
+                if c.state_timer <= 0.0:
+                    c.faction = 1 - c.faction
+                    c.faith = fa.convert_faith_reset
+                    # Their old life is over: home is where they knelt.
+                    c.home_x = float(int(c.x)) + 0.5
+                    c.home_y = float(int(c.y)) + 0.5
+                    c.target_x = c.x
+                    c.target_y = c.y
+                    # An Inspire from the god they just left does not
+                    # survive the flip.
+                    c.inspire_bias_until = -1.0
+                    c.state = CitizenState.IDLE
+                    c.state_timer = 0.0
+                    # Population, belief scatter, attractor sync, tier
+                    # progression and the HUD all key off `c.faction`
+                    # already - no further accounting needed.
                 continue
 
             if c.state == CitizenState.EATING:
@@ -486,6 +561,7 @@ class CitizenManager:
             if int(c.x) == tx_i and int(c.y) == ty_i:
                 c.state = CitizenState.DYING
                 c.state_timer = float(dying_duration)
+                c.death_cause = "drown"
                 drowned += 1
         return drowned
 

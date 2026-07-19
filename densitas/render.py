@@ -8,6 +8,7 @@ contract.
 """
 from __future__ import annotations
 import abc
+import math
 import pygame
 import numpy as np
 from typing import Iterable, Optional, TYPE_CHECKING
@@ -322,6 +323,10 @@ class PixelRenderer(Renderer):
         self._build_tile_sprites(variants_per_tile)
         self._citizen_sprites: dict[tuple[int, int, int], pygame.Surface] = {}
         self._build_citizen_sprites()
+        # PR4 step 2: lazily-built conversion halos, keyed by
+        # (receiving_faction, facing, frame). Built on first apostasy so
+        # a round with no conversions pays nothing.
+        self._convert_halos: dict[tuple[int, int, int], pygame.Surface] = {}
         self._belief_cache_version: int = -1
         self._belief_overlay_world: pygame.Surface | None = None
         self._food_cache_version: int = -1
@@ -385,6 +390,35 @@ class PixelRenderer(Renderer):
                     surf = self._paint_citizen(faction, facing, frame,
                                                 skin, robe, accent, outline)
                     self._citizen_sprites[(faction, int(facing), frame)] = surf
+
+    def _convert_halo(self, recv_faction: int, facing: int,
+                       frame: int) -> Optional[pygame.Surface]:
+        """1-px silhouette ring in `recv_faction`'s accent colour.
+
+        PR4 step 2 (spec §3, renderer note). Built by smearing the
+        sprite's own mask one pixel in each cardinal direction onto a
+        surface two pixels larger; the citizen sprite blitted on top at
+        the centre covers everything but the ring. Cached forever - the
+        set is at most n_factions x 4 facings x 1 frame.
+        """
+        key = (recv_faction, facing, frame)
+        halo = self._convert_halos.get(key)
+        if halo is not None:
+            return halo
+        base = self._citizen_sprites.get((recv_faction, facing, frame))
+        if base is None:
+            return None
+        accent = CITIZEN_PALETTE.get(
+            recv_faction, CITIZEN_PALETTE[0])[2]
+        silhouette = pygame.mask.from_surface(base).to_surface(
+            setcolor=(*accent, 255), unsetcolor=(0, 0, 0, 0),
+        )
+        halo = pygame.Surface((CITIZEN_W + 2, CITIZEN_H + 2), pygame.SRCALPHA)
+        halo.fill((0, 0, 0, 0))
+        for ox, oy in ((0, 1), (2, 1), (1, 0), (1, 2)):
+            halo.blit(silhouette, (ox, oy))
+        self._convert_halos[key] = halo
+        return halo
 
     @staticmethod
     def _paint_citizen(faction: int, facing: Facing, frame: int,
@@ -474,6 +508,8 @@ class PixelRenderer(Renderer):
           * DYING citizens are alpha-faded by `c.dying_fade` (paired with
             the P1.5 belief-field fade).
           * EATING citizens chew - alternate frame 0 / frame 3 (mouth open).
+          * PR4 step 2: CONVERTED citizens stand still inside a pulsing
+            1-px outline in the receiving faction's accent colour.
         """
         ts = self.cfg.tile_size
         vw, vh = self.cfg.viewport_w, self.cfg.viewport_h
@@ -501,6 +537,23 @@ class PixelRenderer(Renderer):
                     blit(tmp, (wx, wy))
                 else:
                     blit(sprite, (wx, wy))
+                continue
+            # CONVERTED - the ceremony. The citizen stands still in their
+            # *old* faction's palette (the flip lands when the timer
+            # expires); the receiving god's accent pulses as a 1-px
+            # outline so the apostasy reads on the map.
+            if c.state == CitizenState.CONVERTED:
+                sprite = sprites.get((c.faction, int(c.facing), 0))
+                if sprite is None:
+                    sprite = sprites[(0, int(Facing.SOUTH), 0)]
+                halo = self._convert_halo(1 - c.faction, int(c.facing), 0)
+                if halo is not None:
+                    # ~1 Hz pulse, phase-offset per citizen so a mass
+                    # conversion along a seam does not strobe in unison.
+                    pulse = 0.5 + 0.5 * math.sin(sim_time * 6.0 + c.id * 0.7)
+                    halo.set_alpha(int(60 + 165 * pulse))
+                    blit(halo, (wx - 1, wy - 1))
+                blit(sprite, (wx, wy))
                 continue
             # EATING - alternate mouth-closed (0) and mouth-open (3) ~2.5x/sec.
             if c.state == CitizenState.EATING:

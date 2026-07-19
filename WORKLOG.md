@@ -1153,3 +1153,82 @@ contested zone, everything stays in [0, 1].
 Lands via `commit_pr4_step1.cmd` (pre-flight expects HEAD `64db313` —
 the spec said "the spec commit" but the EOL-tidy commit landed after
 it; the pre-flight tracks reality).
+
+---
+
+## 2026-07-20 — PR4 step 2: CONVERTED + despair + the faction flip
+
+Spec: `Densitas_rival_ai.md` §2.3, §3, §12-B, §13 step 2.
+
+- `densitas/citizen.py` — the §2.3 threshold checks land immediately
+  after the step-1 faith update, inside the same `fa is not None` block
+  (they need that tick's `b_riv`, which is now hoisted so the CONVERTED
+  row below can read it too). Order is despair-then-convert:
+  `faith <= despair_threshold` → DYING via the existing death path with
+  `death_cause = "despair"`; otherwise `faith <= convert_threshold`
+  **and** `b_riv >= min_convert_belief` → CONVERTED with
+  `state_timer = ceremony_duration`. DYING and MATE are exempt from the
+  *transitions* only — the drain still ran on them a few lines above.
+  Entry deliberately does **not** `continue`: hunger and starvation
+  still apply mid-ceremony, and the new dispatch row picks the citizen
+  up on the same tick.
+- **CONVERTED dispatch row** (placed after MATE, before the
+  forage/IDLE/WANDER section — the old fall-through would have let a
+  CONVERTED citizen wander off to forage). Abort when `b_riv` drops
+  under `min_convert_belief` (revert to IDLE, faith untouched);
+  on expiry flip `faction`, reset faith to `convert_faith_reset`, move
+  `home_*` to the tile they knelt on, clear `inspire_bias_until` (an
+  Inspire from the god they just left shouldn't survive apostasy) and
+  drop to IDLE. No accounting code: population/tier, belief scatter,
+  attractor sync and the HUD all key off `c.faction` already — P2's
+  faction plumbing paying out exactly as specced.
+- `Citizen.death_cause: str = ""` — new field, tagged on all four death
+  paths (`age`, `starvation`, `drown`, `despair`), not just despair. The
+  spec only asked for the despair tag; tagging the rest was three lines
+  and makes the field honest for the step-8 summary and the eventual
+  end-of-round screen.
+- `densitas/render.py` — one new branch in `blit_citizens`: a CONVERTED
+  citizen stands still in their *old* palette inside a 1-px halo in the
+  **receiving** faction's accent colour, alpha-pulsing ~1 Hz with a
+  per-citizen phase offset (`c.id * 0.7`) so a seam-wide cascade doesn't
+  strobe in unison. `_convert_halo()` builds the ring by smearing the
+  sprite's own mask one pixel in each cardinal direction onto a surface
+  2 px larger; the sprite blitted on top covers everything but the ring.
+  Cached lazily in `self._convert_halos` — a round with no conversions
+  pays nothing. PixelRenderer only; no new abstract method on `Renderer`,
+  per spec.
+- `tests/test_conversion.py` — group B, 8 tests: despair-beats-convert
+  when both fire, the `min_convert_belief` gate (and the same thin-field
+  zone carrying a citizen on to despair, which is the point of the gate),
+  ceremony abort, completion flip + faith/home reset, population/tier
+  accounting following the flip, newborn faith 1.0, DYING exempt (and not
+  re-tagged), despair reusing the death path (timer, fade, removal).
+- `tests/test_faith.py` — A6's comment updated; the assertion itself was
+  already correct (MATE is exempt, so it still holds post-step-2).
+
+**Tests:** 223 / 223 headless (215 + 8), `SDL_VIDEODRIVER=dummy`,
+`--assert=plain`. `py_compile` clean on both touched modules.
+
+Renderer smoke: headless `blit_citizens` over a CONVERTED citizen at four
+sim times; halo builds 10x18 with 138 opaque px and caches one entry.
+
+Integration spot-check: real `BeliefField` + `FoodField`, 40 rival-stub
+citizens relocated onto the player cluster, 400 ticks — 9 player citizens
+completed the flip to faction 1, 63 citizen-ticks spent mid-ceremony,
+faith stayed inside [0, 1] every tick, and the cause tags came through
+(`starvation` observed alongside the flips). The player faction was
+wiped in that setup, which is a *deliberately* unfair seam (40 v 8 on
+top of each other), not a balance signal.
+
+Headless `main()` boot smoke with `--rival-stub-seed 20`: clean through
+world → renderer → food → citizens → belief → rhetoric → power system,
+no traceback.
+
+**Flagged, not fixed (spec §14):** tier high-water-mark. GDD §5 says
+tiers persist once unlocked; `can_cast` recomputes `tier_for(population)`
+live. Conversion makes population *drops* routine for the first time, so
+tier regression is now observable in play. Added to TODO.
+
+Lands via `commit_pr4_step2.cmd` (pre-flight expects HEAD `9fae165`).
+The commit also carries the `Claude.md` working-agreement sync and the
+`TODO.md` step-tracker drift that were sitting uncommitted in the tree.
