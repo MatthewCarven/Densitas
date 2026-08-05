@@ -158,7 +158,7 @@ When the menu calls `Game.from_options(opts, base_cfg)`:
 1. Merge the preset overrides into `base_cfg` (see §4).
 2. Generate world with the merged WorldConfig.
 3. Build food / citizens / belief as today.
-4. If `rival_count > 0`, call `citizens.spawn_rival_stub(world, n=rival_count_to_citizen_count(rival_count), faction=1, seed=opts.seed^1)`.
+4. If `rival_count > 0`, call `citizens.spawn_faction_at(world, n=rival_count_to_citizen_count(rival_count), faction=1, seed=opts.seed^1)` (renamed from `spawn_rival_stub` in PR4 step 3).
 5. Wire PowerSystem (with the mutate_tile closure, per PR2).
 
 `rival_count_to_citizen_count`: maps the human-facing rival count to

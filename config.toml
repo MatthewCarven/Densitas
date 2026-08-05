@@ -49,6 +49,18 @@ ceremony_duration   = 1.5    # sim_s standing in CONVERTED
 convert_faith_reset = 0.60   # converts restart shaky
 scripture_coalesce_window = 5.0
 
+[rival]
+# PR4 - the rival god (Densitas_rival_ai.md SS5, SS11). Opening bids.
+enabled            = true
+personality        = "zealot"    # zealot | steward | trickster
+difficulty         = 1.0         # scales decision cadence ONLY (GDD SS7)
+initial_population = 8
+spawn_frac_x       = 0.75        # fraction of map width
+spawn_frac_y       = 0.50        # fraction of map height
+spawn_radius_tiles = 5
+ai_base_period     = 2.0         # sim_s between decisions at difficulty 1.0
+ai_seed            = 0
+
 [belief]
 grid_w            = 64
 grid_h            = 48

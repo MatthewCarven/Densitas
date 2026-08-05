@@ -157,7 +157,7 @@ Spec: **`Densitas_rival_ai.md`** (2026-06-07) — conversion + rival AI in one P
 **PR4 step tracker** (spec §13; one .cmd each, /outputs staging):
 - [x] ~~Step 1 — `faith` field + drain/regen + `[citizen.faith]` config + tests A~~ — built 2026-06-11, 215/215 pass. **Landed + pushed as `9fae165`.**
 - [x] ~~Step 2 — CONVERTED dispatch row + despair + flip + outline pulse + tests B~~ — built 2026-07-20, 223/223 pass. Lands via `commit_pr4_step2.cmd` (pre-flight HEAD `9fae165`).
-- [ ] Step 3 — `[rival]` block, default-on spawn, seed-relic removal + `--seed-relics`, stub-flag deprecation + tests C.
+- [x] ~~Step 3 — `[rival]` block, default-on spawn, seed-relic removal + `--seed-relics`, stub-flag deprecation + tests C~~ — built 2026-07-20, 228/228 pass. Lands via `commit_pr4_step3.cmd` (pre-flight HEAD `2a2e723`).
 - [ ] Step 4 — `rival_ai.py` skeleton (personality dataclass, cadence, senses, scoring, decision ring, `--ai-debug`) + tests D.
 - [ ] Step 5 — cast intents live (Curse/Hunger-Pang/Lower/Bless) + `GOD_FORBIDS` mask + tests E.
 - [ ] Step 6 — relic intents (place/move/retrieve, push-point targeting) + tests F.
@@ -168,7 +168,7 @@ Surfaced by step 2 — **tier high-water-mark.** GDD §5 says tiers persist once
 unlocked, but `can_cast` recomputes `tier_for(population(faction))` live.
 Conversion makes population *drops* routine, so tier regression is now
 observable in play. Flagged in spec §14; deliberately out of scope for PR4.
-- [ ] Rival faction citizens spawn from rival starting point.
+- [x] ~~Rival faction citizens spawn from rival starting point.~~ — PR4 step 3: default-on, `[rival] spawn_frac_x/y`.
 - [ ] Three personality decision loops (Zealot / Steward / Trickster).
 - [ ] Belief field per faction; conflict where they overlap (already plumbed in P2).
 - [ ] CONVERTED state wired up.

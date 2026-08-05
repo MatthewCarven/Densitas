@@ -1232,3 +1232,68 @@ tier regression is now observable in play. Added to TODO.
 Lands via `commit_pr4_step2.cmd` (pre-flight expects HEAD `9fae165`).
 The commit also carries the `Claude.md` working-agreement sync and the
 `TODO.md` step-tracker drift that were sitting uncommitted in the tree.
+
+---
+
+## 2026-07-20 — PR4 step 3: the rival becomes real (round setup)
+
+Spec: `Densitas_rival_ai.md` §5, §11, §12-C, §13 step 3.
+
+- `densitas/config.py` — `RivalConfig` frozen dataclass, nine knobs,
+  spec defaults as field defaults so `RivalConfig()` stands in for both
+  tests and a `config.toml` written before the block existed.
+  `Config.rival` uses `field(default_factory=RivalConfig)` for the same
+  reason. `load()` reads `raw.get("rival", {})` and validates two things
+  that would otherwise fail silently and weirdly: `personality` against
+  `PERSONALITIES` (a typo'd "zelot" would have quietly selected the
+  wrong brain in step 4) and `difficulty > 0` (it divides the decision
+  period). `ai_base_period` / `ai_seed` / `difficulty` land now but are
+  step 4's to consume.
+- `config.toml` — `[rival]` block, spec §11 opening bids verbatim,
+  slotted between `[citizen.faith]` and `[belief]`.
+- `densitas/citizen.py` — `spawn_rival_stub` → **`spawn_faction_at`**
+  (spec §15). Same walkable-rejection loop; the hardcoded 3/4-across
+  centre becomes `frac_x` / `frac_y` args and the radius is overridable.
+  Defaults reproduce the old stub location exactly, so the rename is the
+  only behavioural change. No back-compat alias — the stub name retires.
+- `densitas/main.py` —
+  * **Default-on rival spawn.** `effective_rival_population(rival_cfg,
+    args)` resolves the count: the deprecated flag wins if present, else
+    `enabled ? initial_population : 0`. Extracted as a pure function
+    precisely so the precedence is testable without booting pygame.
+  * **`--rival-stub-seed` deprecated** to an override alias that prints
+    a warning naming its replacement and its removal milestone (P5).
+    The pre-existing "expects an integer" guard still fires first for
+    garbage input — no double warning.
+  * **Seed relics moved behind `--seed-relics`.** The six placements are
+    now module-level `SEED_RELIC_PLACEMENTS` with a `seed_relics()`
+    helper (returns how many landed; a skipped placement is logged, not
+    fatal, as before). A default round prints its six AVAILABLE slots
+    instead.
+- `README.md` — new "The rival god" section, `--seed-relics` documented,
+  `--rival-stub-seed` marked deprecated. `Densitas_menu.md` — the future
+  menu spec's `spawn_rival_stub` reference retargeted at the new name.
+- `tests/test_round_setup.py` — group C, 5 tests: default spawn count +
+  every rival inside the configured radius of the configured centre;
+  deprecated flag warns, overrides, and beats `enabled = false` (a debug
+  flag should mean what it says), plus the garbage-value path; the
+  `--seed-relics` set matches `SEED_RELIC_PLACEMENTS` tile-for-tile; a
+  default round has six AVAILABLE and runs no seeder; `[rival]`
+  round-trips, a `[rival]`-less file still loads at defaults, and a
+  typo'd personality raises at load.
+
+**Tests:** 228 / 228 headless (223 + 5), `SDL_VIDEODRIVER=dummy`,
+`--assert=plain`. `py_compile` clean on the three touched modules.
+
+Boot smokes, all three paths: default round (+8 rival citizens, six
+AVAILABLE slots, `f0=8.00 f1=8.00` belief), `--seed-relics` (6/6 seeded),
+`--rival-stub-seed 12` (deprecation warning, +12 rivals).
+
+Headless 300-tick default round with the real belief/food fields: both
+factions grow (14 v 17 at 60 sim_s), faith stays pinned at 1.0 and
+conversions are zero — which is correct, not a bug: the clusters spawn
+64 tiles apart on a 256-wide map and nothing yet pushes them together.
+Contact is the AI's job (steps 4-6), and the seam behaviour is already
+covered by step 2's forced-overlap spot-check.
+
+Lands via `commit_pr4_step3.cmd` (pre-flight expects HEAD `2a2e723`).

@@ -125,11 +125,31 @@ absent on upstream.
 - **F** — toggle food heatmap overlay
 - **ESC** (no mode selected) — quit
 
+### The rival god
+
+Since PR4 step 3 a rival spawns by default — `[rival]` in `config.toml`
+sets the count, the spawn point (as a fraction of map size), the
+personality and the difficulty. For a solo sandbox round:
+
+```toml
+[rival]
+enabled = false
+```
+
 ### Debug flags
 
-- `--rival-stub-seed N` — spawn N faction-1 citizens at the canonical rival
-  origin (3/4 across, mid-height). Exercises multi-faction codepaths
-  (relic shatter, belief two-faction scatter) before P4 lands real rival AI.
+- `--seed-relics` — place the six hardcoded debug relics (three per god,
+  centre-relative). These used to be round setup; now the player places
+  theirs with **R** and the AI places its own, so a default round starts
+  with all six slots AVAILABLE. The flag is for renderer work.
+
+  ```bash
+  python -m densitas.main --seed-relics
+  ```
+
+- `--rival-stub-seed N` — **deprecated** (PR4 step 3, removed in P5).
+  Overrides `[rival] initial_population`; prints a warning. Use the
+  config block instead.
 
   ```bash
   python -m densitas.main --rival-stub-seed 24

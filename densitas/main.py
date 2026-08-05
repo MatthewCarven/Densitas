@@ -7,7 +7,12 @@ Tile map + camera + terrain (P0) + citizens + HUD (P1) + belief field (P2)
 
 Run from the repo root with:
     python -m densitas.main
-    python -m densitas.main --rival-stub-seed 12    # spawn 12 rival citizens for testing
+    python -m densitas.main --seed-relics           # restore the six debug relics
+    python -m densitas.main --rival-stub-seed 12    # DEPRECATED - overrides [rival] initial_population
+
+The rival god spawns by default (PR4 step 3): `[rival]` in config.toml
+controls the count, location and personality. Set `enabled = false` for
+a solo sandbox round.
 
 Number keys 1-7 pick a power mode:
     1 Inspire   2 Calm        3 Hunger Pang
@@ -59,17 +64,28 @@ POWER_KEYS: dict[int, PowerKind] = {
 
 
 def parse_args(argv: list[str]) -> dict:
-    """Tiny arg parser - argparse would be overkill for one flag."""
-    out = {"rival_stub_seed": 0}
+    """Tiny arg parser - argparse would be overkill for two flags."""
+    out = {"rival_stub_seed": 0, "seed_relics": False}
     i = 1
     while i < len(argv):
         a = argv[i]
+        if a == "--seed-relics":
+            # PR4 step 3: the six hardcoded placements are debug scenery
+            # now, not round setup. Handy for renderer work.
+            out["seed_relics"] = True
+            i += 1
+            continue
         if a == "--rival-stub-seed":
             i += 1
             try:
                 out["rival_stub_seed"] = int(argv[i])
             except (IndexError, ValueError):
                 print(f"warning: --rival-stub-seed expects an integer; ignoring", file=sys.stderr)
+            else:
+                print("warning: --rival-stub-seed is deprecated (PR4 step 3) - "
+                      "the rival spawns by default; use [rival] initial_population "
+                      "in config.toml. The flag still overrides it; it goes away in P5.",
+                      file=sys.stderr)
             i += 1
             continue
         if a in ("--help", "-h"):
@@ -78,6 +94,57 @@ def parse_args(argv: list[str]) -> dict:
         # Skip unknowns silently - pygame.main might inherit argv.
         i += 1
     return out
+
+
+def effective_rival_population(rival_cfg, args: dict) -> int:
+    """How many rival citizens this round starts with.
+
+    PR4 step 3 (spec §5). `[rival] enabled = false` means none;
+    otherwise `initial_population`. The deprecated `--rival-stub-seed N`
+    overrides both - an explicit debug flag beats config, including the
+    disabled case, so `--rival-stub-seed 12` always gets you 12 rivals.
+    """
+    override = int(args.get("rival_stub_seed", 0) or 0)
+    if override > 0:
+        return override
+    if not rival_cfg.enabled:
+        return 0
+    return int(rival_cfg.initial_population)
+
+
+# The six centre-relative relic placements that used to be round setup.
+# They made sense when relics were watch-only scenery; from PR4 step 3 the
+# player places their own (R-key, PR3 step 10) and the AI places its own
+# (spec §8), so these live behind --seed-relics for renderer testing.
+SEED_RELIC_PLACEMENTS: tuple[tuple[int, int, int, int], ...] = (
+    # (faction, slot, dx, dy)
+    (0, 0, -4, -1),   # Open Eye  - NW (walkable for seed=0; (-3,-2) lands on a hill)
+    (0, 1,  3,  0),   # Open Eye  - E (in the cluster)
+    (0, 2, -8, -6),   # Open Eye  - far NW (alone)
+    (1, 0,  0,  4),   # Maw       - rival S
+    (1, 1,  5,  3),   # Maw       - rival SE
+    (1, 2,  1,  5),   # Maw       - rival cluster
+)
+
+
+def seed_relics(relic_mgr: RelicManager, world,
+                 placements: tuple[tuple[int, int, int, int], ...] = SEED_RELIC_PLACEMENTS,
+                 sim_t: float = 0.0, verbose: bool = True) -> int:
+    """Place the debug relic set, centre-relative. Returns how many landed.
+
+    A seed tile can fall on water for an unusual world seed; that is
+    logged and skipped rather than fatal - the preview copes with fewer
+    than six relics on screen.
+    """
+    cx, cy = world.width // 2, world.height // 2
+    placed = 0
+    for f, slot, dx, dy in placements:
+        ok, why = relic_mgr.place(f, slot, cx + dx, cy + dy, world, sim_t=sim_t)
+        if ok:
+            placed += 1
+        elif verbose:
+            print(f"  relic seed skipped (f{f} s{slot}): {why}")
+    return placed
 
 
 def _relic_mode_label(state: RelicInputState) -> str:
@@ -184,44 +251,39 @@ def main(argv: list[str] | None = None) -> int:
                                   relic_cfg=cfg.powers.relic)
     print(f"  spawned {len(citizen_mgr.citizens)} citizens")
 
-    # P3 - optional rival stub for live testing of multi-faction codepaths.
-    if args["rival_stub_seed"] > 0:
-        placed = citizen_mgr.spawn_rival_stub(
-            world, n=args["rival_stub_seed"],
-            faction=1, seed=cfg.world.seed,
+    # PR4 step 3 (spec §5) - the rival god is default-on. There is an
+    # opponent on the map from tick zero; the AI brain arrives in step 4.
+    n_rival = effective_rival_population(cfg.rival, args)
+    if n_rival > 0:
+        placed = citizen_mgr.spawn_faction_at(
+            world, n=n_rival, faction=1,
+            frac_x=cfg.rival.spawn_frac_x,
+            frac_y=cfg.rival.spawn_frac_y,
+            radius=cfg.rival.spawn_radius_tiles,
+            seed=cfg.world.seed,
         )
-        print(f"  +{placed} rival-faction citizens (--rival-stub-seed)")
+        print(f"  +{placed} rival citizens ({cfg.rival.personality}) at "
+              f"({cfg.rival.spawn_frac_x:.2f}, {cfg.rival.spawn_frac_y:.2f}) "
+              f"of map")
+    else:
+        print("  no rival this round ([rival] enabled = false)")
 
-    # PR3 step 1 (2026-05-22): real RelicManager replaces the pre-PR3
-    # SimpleNamespace list. We seed with the same six placements so the
-    # on-screen preview is unchanged. The state machine is live: any
-    # PLACED relic on the map already participates in `placed_for_faction`.
-    # Belief contribution / attractors / shatter rule arrive in PR3
-    # steps 2-4.
+    # PR3 step 1 (2026-05-22): real RelicManager owns the per-round relic
+    # list. PR4 step 3: a default round now starts with all six slots
+    # AVAILABLE - the player places theirs with R and the AI places its
+    # own (spec §8). --seed-relics restores the old debug scenery.
     relic_mgr = RelicManager(cfg.powers.relic, n_factions=2)
-    cx_, cy_ = world.width // 2, world.height // 2
-    _seed_placements: tuple[tuple[int, int, int, int], ...] = (
-        # (faction, slot, dx, dy)
-        (0, 0, -4, -1),   # Open Eye  - NW (walkable for seed=0; (-3,-2) lands on a hill)
-        (0, 1,  3,  0),   # Open Eye  - E (in the cluster)
-        (0, 2, -8, -6),   # Open Eye  - far NW (alone)
-        (1, 0,  0,  4),   # Maw       - rival S
-        (1, 1,  5,  3),   # Maw       - rival SE
-        (1, 2,  1,  5),   # Maw       - rival cluster
-    )
-    for _f, _s, _dx, _dy in _seed_placements:
-        _ok, _why = relic_mgr.place(_f, _s, cx_ + _dx, cy_ + _dy,
-                                      world, sim_t=0.0)
-        if not _ok:
-            # Don't crash - just log and move on. A seed tile may land
-            # on water for an unusual world seed; the preview can
-            # cope with fewer than six relics on screen.
-            print(f"  relic seed skipped (f{_f} s{_s}): {_why}")
-    # PR3 step 3: push the now-PLACED relics into the citizen
-    # manager so wander picks can be drawn toward them. Each
-    # future R-key placement / move / retrieve (PR3 step 10) and
-    # shatter (PR3 step 4) will re-sync; for now the static seed
-    # state is enough.
+    if args["seed_relics"]:
+        n_seeded = seed_relics(relic_mgr, world)
+        print(f"  seeded {n_seeded}/{len(SEED_RELIC_PLACEMENTS)} debug "
+              f"relics (--seed-relics)")
+    else:
+        print(f"  {len(relic_mgr.relics)} relic slots AVAILABLE "
+              f"(--seed-relics to place the debug six)")
+    # PR3 step 3: push any PLACED relics into the citizen manager so
+    # wander picks can be drawn toward them. Re-synced after every
+    # R-key placement / move / retrieve (PR3 step 10) and shatter
+    # (PR3 step 4).
     citizen_mgr.sync_attractors_from_relics(
         relic_mgr.relics, cfg.powers.relic.attract_radius,
     )

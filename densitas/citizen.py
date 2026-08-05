@@ -19,8 +19,9 @@ population long before exponential growth swamps the map.
 P3 PR1 adds two CitizenManager hooks the PowerSystem calls:
   * `inspire_citizen` — pre-empt one citizen's wander target.
   * `find_nearest_other_faction` — Hunger-Pang dispatch helper.
-  * `spawn_rival_stub(seed, n)` — debug-flag entry point for live-play
-    testing of multi-faction codepaths before P4.
+  * `spawn_faction_at(...)` — general faction-spawn helper. Was
+    `spawn_rival_stub` until PR4 step 3; the rival is a real opponent
+    now, not a debug prop.
 
 PR4 step 2 activates CONVERTED: faith thresholds (spec §2.3) send a
 citizen to despair (DYING, cause tag "despair") or into the conversion
@@ -565,18 +566,24 @@ class CitizenManager:
                 drowned += 1
         return drowned
 
-    def spawn_rival_stub(self, world: World, n: int, faction: int = 1,
+    def spawn_faction_at(self, world: World, n: int, faction: int = 1,
+                          frac_x: float = 0.75, frac_y: float = 0.50,
+                          radius: Optional[int] = None,
                           seed: int = 0) -> int:
-        """Debug-flag entry point. Spawn `n` rival-faction citizens at the
-        canonical stub location: 3/4 across, mid-height. Returns the
-        number actually placed (some attempts land on unwalkable tiles).
+        """Spawn `n` citizens of `faction` around a point given as a
+        fraction of map size. Returns the number actually placed - the
+        walkable-rejection loop gives up after `n * 50` attempts, so a
+        cluster centre in the middle of an ocean yields fewer.
 
-        Used by `python -m densitas.main --rival-stub-seed N`.
+        PR4 step 3 (spec §5): this was `spawn_rival_stub`, hardcoded to
+        3/4 across and mid-height. The rival is a real opponent now, so
+        the centre and radius come from `[rival]` config instead. The
+        defaults reproduce the old stub location exactly.
         """
         rng = np.random.default_rng(seed ^ 0xABCDEF)
-        cx = (world.width * 3) // 4
-        cy = world.height // 2
-        r = self.cfg.spawn_radius_tiles
+        cx = int(world.width * frac_x)
+        cy = int(world.height * frac_y)
+        r = self.cfg.spawn_radius_tiles if radius is None else int(radius)
         placed = 0
         attempts = 0
         max_attempts = n * 50

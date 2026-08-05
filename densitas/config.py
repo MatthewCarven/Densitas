@@ -65,6 +65,32 @@ class FaithConfig:
 
 
 @dataclass(frozen=True)
+class RivalConfig:
+    """PR4 step 3: the rival god (`Densitas_rival_ai.md` §5, §11).
+
+    Defaults are the spec's opening bids, so `RivalConfig()` is a valid
+    stand-in for tests and for a config.toml written before the block
+    existed. `personality` picks the brain, not the god - the Maw is the
+    skin either way. `difficulty` scales decision *cadence* only (GDD
+    §7); it is consumed by step 4's `RivalAI`, as are `ai_base_period`
+    and `ai_seed` - they land here so the `[rival]` block is complete
+    from the step that introduces it.
+    """
+    enabled:            bool  = True
+    personality:        str   = "zealot"   # zealot | steward | trickster
+    difficulty:         float = 1.0        # scales decision cadence ONLY
+    initial_population: int   = 8
+    spawn_frac_x:       float = 0.75
+    spawn_frac_y:       float = 0.50
+    spawn_radius_tiles: int   = 5
+    ai_base_period:     float = 2.0        # sim_s between decisions at difficulty 1.0
+    ai_seed:            int   = 0
+
+
+PERSONALITIES: tuple[str, ...] = ("zealot", "steward", "trickster")
+
+
+@dataclass(frozen=True)
 class CitizenConfig:
     # Population & lifecycle
     initial_population: int
@@ -186,6 +212,9 @@ class Config:
     belief: BeliefConfig
     food: FoodConfig
     powers: PowerConfig
+    # PR4 step 3: default_factory keeps `Config(...)` constructible
+    # without a [rival] block (older config.toml, hand-built test cfgs).
+    rival: RivalConfig = field(default_factory=RivalConfig)
 
 
 def load(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
@@ -205,6 +234,19 @@ def load(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
     citizen_raw = dict(raw["citizen"])
     faith_raw = citizen_raw.pop("faith")
 
+    # PR4 step 3: [rival] is optional - a config.toml written before the
+    # block still loads, with the spec defaults.
+    rival = RivalConfig(**dict(raw.get("rival", {})))
+    if rival.personality not in PERSONALITIES:
+        raise ValueError(
+            f"[rival] personality must be one of {PERSONALITIES}, "
+            f"got {rival.personality!r}"
+        )
+    if rival.difficulty <= 0.0:
+        raise ValueError(
+            f"[rival] difficulty must be > 0, got {rival.difficulty}"
+        )
+
     return Config(
         world=WorldConfig(**raw["world"]),
         render=RenderConfig(**raw["render"]),
@@ -213,4 +255,5 @@ def load(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
         belief=BeliefConfig(**raw["belief"]),
         food=FoodConfig(biome=FoodBiomeConfig(**biome_raw), **food_raw),
         powers=PowerConfig(relic=RelicConfig(**relic_raw), **powers_raw),
+        rival=rival,
     )
