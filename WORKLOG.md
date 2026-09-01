@@ -1297,3 +1297,102 @@ Contact is the AI's job (steps 4-6), and the seam behaviour is already
 covered by step 2's forced-overlap spot-check.
 
 Lands via `commit_pr4_step3.cmd` (pre-flight expects HEAD `2a2e723`).
+
+---
+
+## 2026-09-02 — PR4 step 4: the rival gets a brain (senses, scores, no hands)
+
+Spec: `Densitas_rival_ai.md` §6-§10, §12-D, §13 step 4.
+
+- **`densitas/rival_ai.py`** (new) — `Intent` (7 + IDLE), `AIPersonality`
+  frozen dataclass + the three presets, `GOD_FORBIDS`, `Senses`,
+  `DecisionRecord`, and `RivalAI` with the cadence accumulator, the
+  sense/score/target pipeline and the 64-entry decision ring. Only
+  `main.py` imports it, and it imports only public APIs — which is why
+  `powers._god_key_for` was promoted to `god_key_for` (old name kept as
+  an alias). Zealot numbers are §9.1 verbatim; Steward and Trickster fill
+  the gaps the spec left in prose.
+- **`_execute` is a documented no-op.** Step 4 senses, scores, refines a
+  real target and logs it — it just doesn't pull the trigger. That cut
+  line was chosen over "score nothing until the verbs exist" so
+  `--ai-debug` shows honest targets from this step, and so steps 5 and 6
+  become additions to one method rather than new plumbing.
+- **`densitas/main.py`** — `--ai-debug`; the AI is built whenever the
+  round has rival citizens (so `--rival-stub-seed N` against
+  `enabled = false` still gets the brain it asked for); ticked in the
+  5 Hz block after `relic_mgr.tick` and the attractor re-sync, per §6.
+
+**Three readings of the spec, all deliberate, all documented in-module:**
+
+1. **Jitter is not applied to infeasible intents.** §8's
+   `score = w x u x feasible + jitter` lets an infeasible intent score up
+   to `jitter` — and the Zealot's jitter (0.05) exactly ties its
+   `idle_floor` (0.05). Zero-utility now scores exactly 0.0, which makes
+   §8's own "an infeasible intent scores 0" literally true and the
+   same-rules pillar structural rather than lucky.
+2. **Refinement splits walkability from validity.** §8 asks for
+   "walkability + the verb's own validity check", but CAST_LOWER
+   deliberately targets *unwalkable* ridge, and `RelicManager` already
+   rejects unwalkable tiles itself. So `refine(require_walkable=...)`:
+   False for casts (where `can_cast` is the authority), True for relics.
+3. **Three dataclasses, not §6's one.** `Senses` is separate so the
+   determinism and senses tests don't have to reach into private state.
+
+**Fixed during the smoke run:** with no seam, `seam_peak_cell` is
+`(0, 0)` by argmax tie-break — a map corner, not an anchor — so the relic
+push point was lerping out of the top-left. `push_point_cell` now falls
+back to our own centroid when `seam_peak_value` is zero, which reads the
+lerp as "push from where we are toward them". No effect once a seam
+exists. Covered by the addition to D6.
+
+**Tests:** 237 / 237 headless (228 + 9), `SDL_VIDEODRIVER=dummy`,
+`--assert=plain`. Eight are §12 group D — cadence, difficulty scaling,
+the one-logic-tick floor, seeded determinism (including a negative
+control: a different `ai_seed` must produce a *different* log), argmax
+senses, centroids, the 64-cap ring, and the Maw's bless mask with an
+Open Eye control proving the mask is what suppresses it. The ninth is a
+labelled guard rail over the presets and the factory, which the other
+eight lean on.
+
+**Boot smoke** (`--ai-debug`, headless): AI online as `zealot as maw,
+decision every 2.00 sim_s`; three IDLEs while the pool is under Hunger
+Pang's 1.0, first cast intent at t=7.8, then a target every 2 sim_s.
+
+**Headless 600 sim_s default round:** 300 decisions, no exceptions, pool
+never negative (min 0.03), nothing executed. Mix: 297 HUNGER_PANG, 3
+IDLE.
+
+**Forced-contact spot-check, 400 sim_s, 8 v 8 overlapping:** seam_overlap
+0.254, and the seam-derived intents come alive — 177 HUNGER_PANG, 20
+CAST_CURSE, 3 RELIC_PLACE. Push point lands at (126,106) between own
+centroid (143,108) and enemy (120,102), i.e. past the midpoint toward the
+enemy at `relic_forward_bias` 0.65. Both factions survive (62 v 46).
+
+**Two findings for step 8 (and one for step 6), flagged not fixed:**
+
+- **The default map never makes contact.** After 600 sim_s the player
+  occupies x 97-150 and the rival x 174-220, with *zero* belief cells
+  carrying both fields. So `seam` is legitimately zero and every
+  seam-derived intent — CURSE, LOWER, RELIC_PLACE, RELIC_MOVE — scores 0
+  forever. Only HUNGER_PANG fires, because it targets `enemy_peak_cell`
+  directly. Step 3's worklog predicted this ("contact is the AI's job");
+  step 4 confirms it quantitatively. Step 8's acceptance run ("places
+  >= 2 relics") is unreachable until something creates the seam. The
+  cheapest fix is step 6's: let RELIC_PLACE key off the push point rather
+  than `seam_overlap`, so relics *make* the contact instead of waiting
+  for it — relic attractors already drag citizens toward them, so a
+  forward relic is exactly the instrument. Alternatives are a closer
+  `spawn_frac_x` or enemy-ward wander drift; both are blunter.
+- **Hunger Pang crowds out Curse.** Its utility is pinned at 1.0 (it
+  aims at the enemy argmax, so normalising by the enemy peak is 1.0 by
+  construction) and it costs 1.0 belief against Curse's 10.0. 177 v 20
+  on the contested map. Not wrong — the cheap constant-pressure action
+  *should* be the default — but step 8 should decide whether 0.8 is the
+  right weight for a power that never scores below 0.8.
+- **The rival is T0 for its first minutes.** `tier_for(8)` is T0, and
+  CURSE / BLESS / LOWER all need tier 2 (population >= 10), so at spawn
+  the only legal PR4 intent is HUNGER_PANG. Self-resolving as the cluster
+  breeds, but it means step 5's first-light test wants a grown rival.
+
+Committed directly (the /outputs + `.cmd` staging ritual is retired as of
+this session).

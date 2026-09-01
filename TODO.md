@@ -158,11 +158,28 @@ Spec: **`Densitas_rival_ai.md`** (2026-06-07) — conversion + rival AI in one P
 - [x] ~~Step 1 — `faith` field + drain/regen + `[citizen.faith]` config + tests A~~ — built 2026-06-11, 215/215 pass. **Landed + pushed as `9fae165`.**
 - [x] ~~Step 2 — CONVERTED dispatch row + despair + flip + outline pulse + tests B~~ — built 2026-07-20, 223/223 pass. Lands via `commit_pr4_step2.cmd` (pre-flight HEAD `9fae165`).
 - [x] ~~Step 3 — `[rival]` block, default-on spawn, seed-relic removal + `--seed-relics`, stub-flag deprecation + tests C~~ — built 2026-07-20, 228/228 pass. Lands via `commit_pr4_step3.cmd` (pre-flight HEAD `2a2e723`).
-- [ ] Step 4 — `rival_ai.py` skeleton (personality dataclass, cadence, senses, scoring, decision ring, `--ai-debug`) + tests D.
-- [ ] Step 5 — cast intents live (Curse/Hunger-Pang/Lower/Bless) + `GOD_FORBIDS` mask + tests E.
+- [x] ~~Step 4 — `rival_ai.py` skeleton (personality dataclass, cadence, senses, scoring, decision ring, `--ai-debug`) + tests D~~ — built 2026-09-02, 237/237 pass. Committed directly (`.cmd` staging retired).
+- [ ] Step 5 — cast intents live (Curse/Hunger-Pang/Lower/Bless) + `GOD_FORBIDS` mask + tests E. *(Mask already landed in step 4; step 5 is filling in `RivalAI._execute` for the four cast intents. Start the first-light test from a grown rival — at spawn population 8 the rival is T0 and only Hunger Pang is legal.)*
 - [ ] Step 6 — relic intents (place/move/retrieve, push-point targeting) + tests F.
 - [ ] Step 7 — scripture: conversion keys + coalescing + Maw gap-fill + tests G. *(Line co-write with Matthew — workshop session, see `densitas-scripture-voice` notes.)*
 - [ ] Step 8 — difficulty wiring + Zealot balance pass + acceptance run (600 sim_s ×3, seed 42) + WORKLOG/TODO/README sync.
+
+Surfaced by step 4 — **the default map never makes contact.** After 600
+sim_s the player holds x 97-150 and the rival x 174-220, with zero belief
+cells carrying both fields. `seam` is therefore legitimately zero, and
+every seam-derived intent (CURSE, LOWER, RELIC_PLACE, RELIC_MOVE) scores
+0 forever; only HUNGER_PANG fires. Step 8's acceptance bar ("places >= 2
+relics") is unreachable until something creates the seam. Cheapest fix is
+step 6's: key RELIC_PLACE off the push point rather than `seam_overlap`,
+so relics *make* contact — relic attractors already pull citizens, so a
+forward relic is the instrument. Blunter alternatives: a closer
+`[rival] spawn_frac_x`, or enemy-ward wander drift.
+
+Surfaced by step 4 — **Hunger Pang crowds out Curse.** Its utility is
+pinned at 1.0 by construction (it aims at the enemy argmax) and it costs
+1.0 belief against Curse's 10.0; 177 v 20 on a contested map. Step 8
+should decide whether `w_hunger_pang = 0.8` is right for a power that
+never scores below 0.8.
 
 Surfaced by step 2 — **tier high-water-mark.** GDD §5 says tiers persist once
 unlocked, but `can_cast` recomputes `tier_for(population(faction))` live.

@@ -61,7 +61,7 @@ The Empty Throne) and a handful of heresies, in
 | **P1.5 — Food, forage & hunger** (tile food regen, carrying capacity) | shipped |
 | P2.5 — Fog of war | next |
 | **P3 — Powers T0–T1 + Religious Relics** (PR1 shipped: T0 + Bless/Curse + Pool + Scripture; PR2 shipped: Raise/Lower + drown; Cast Queue shipped: click-chain + cancel; PR3 relics next) | partial |
-| P4 — Rival god AI | planned |
+| P4 — Rival god AI | in progress (steps 1–4 of 8) |
 | P5 — Tiers T2–T4 (Tempest, Cataclysm, Apocalypse) | planned |
 | P6 — Win/lose conditions + polish | planned |
 
@@ -136,6 +136,18 @@ personality and the difficulty. For a solo sandbox round:
 enabled = false
 ```
 
+PR4 step 4 gives that rival a brain. Every `ai_base_period / difficulty`
+sim seconds it senses the board, scores the whole intent menu — curse,
+hunger pang, lower, bless, and the three relic verbs — and picks the best
+one that clears its `idle_floor`. `difficulty` scales that cadence and
+nothing else: the AI casts through exactly the same `can_cast` path a
+player click does, pays the same belief, and waits out the same
+cooldowns. Three personalities ship (`zealot`, `steward`, `trickster`);
+the Zealot is the tuned one.
+
+**Step 4 decides but does not act** — the verbs land in steps 5 and 6.
+Watch it think with `--ai-debug`.
+
 ### Debug flags
 
 - `--seed-relics` — place the six hardcoded debug relics (three per god,
@@ -153,6 +165,14 @@ enabled = false
 
   ```bash
   python -m densitas.main --rival-stub-seed 24
+  ```
+
+- `--ai-debug` — print every rival AI decision as it happens: the chosen
+  intent, its target tile, its score, and the top three contenders. The
+  fastest way to see why the Maw did what it did.
+
+  ```bash
+  python -m densitas.main --ai-debug
   ```
 
 ## Configuration

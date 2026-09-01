@@ -9,10 +9,13 @@ Run from the repo root with:
     python -m densitas.main
     python -m densitas.main --seed-relics           # restore the six debug relics
     python -m densitas.main --rival-stub-seed 12    # DEPRECATED - overrides [rival] initial_population
+    python -m densitas.main --ai-debug              # dump every rival AI decision to stdout
 
 The rival god spawns by default (PR4 step 3): `[rival]` in config.toml
 controls the count, location and personality. Set `enabled = false` for
-a solo sandbox round.
+a solo sandbox round. PR4 step 4 gives it a brain - it senses, scores and
+logs one decision every `ai_base_period / difficulty` sim seconds, but
+executes nothing until step 5. `--ai-debug` prints those decisions.
 
 Number keys 1-7 pick a power mode:
     1 Inspire   2 Calm        3 Hunger Pang
@@ -43,6 +46,7 @@ from .food import FoodField
 from .hud import HUD
 from .powers import PowerSystem, PowerKind, POWERS
 from .rhetoric import Rhetoric, make_picker
+from .rival_ai import make_rival_ai
 from .relics import (
     RelicManager, RelicState,
     RelicMode, RelicInputState,
@@ -65,7 +69,7 @@ POWER_KEYS: dict[int, PowerKind] = {
 
 def parse_args(argv: list[str]) -> dict:
     """Tiny arg parser - argparse would be overkill for two flags."""
-    out = {"rival_stub_seed": 0, "seed_relics": False}
+    out = {"rival_stub_seed": 0, "seed_relics": False, "ai_debug": False}
     i = 1
     while i < len(argv):
         a = argv[i]
@@ -73,6 +77,12 @@ def parse_args(argv: list[str]) -> dict:
             # PR4 step 3: the six hardcoded placements are debug scenery
             # now, not round setup. Handy for renderer work.
             out["seed_relics"] = True
+            i += 1
+            continue
+        if a == "--ai-debug":
+            # PR4 step 4: dump every rival decision (intent, target,
+            # score, top 3) to stdout as it happens.
+            out["ai_debug"] = True
             i += 1
             continue
         if a == "--rival-stub-seed":
@@ -328,6 +338,21 @@ def main(argv: list[str] | None = None) -> int:
         rhetoric_pick=make_picker(rhet),
         mutate_tile=_mutate_tile_cb,
     )
+
+    # PR4 step 4 (spec §6) - the rival gets a brain. Built whenever the
+    # round actually has rival citizens, so `--rival-stub-seed N` against
+    # `enabled = false` still gets the opponent it asked for. Step 4
+    # senses/scores/logs only; `_execute` stays a no-op until step 5.
+    rival_ai = None
+    if n_rival > 0:
+        rival_ai = make_rival_ai(
+            cfg.rival, cfg.powers, faction=1,
+            seed=cfg.rival.ai_seed, debug=args["ai_debug"],
+        )
+        print(f"Rival AI online: {rival_ai.p.name} as {rival_ai.god_key}, "
+              f"decision every {rival_ai.period:.2f} sim_s "
+              f"(difficulty {cfg.rival.difficulty:g})"
+              + ("  [--ai-debug]" if rival_ai.debug else ""))
 
     hud = HUD()
 
@@ -675,6 +700,16 @@ def main(argv: list[str] | None = None) -> int:
                         )
                     except Exception:
                         pass
+            # PR4 step 4 (spec §6): the AI senses this tick's fully
+            # settled state - belief recomputed, relics ticked, attractors
+            # re-synced - and its eventual casts (step 5) will dispatch
+            # through the same path as a player click.
+            if rival_ai is not None:
+                rival_ai.tick(
+                    tick_dt, sim_t=sim_time, citizens=citizen_mgr,
+                    belief=belief, relic_mgr=relic_mgr,
+                    power_system=power_system, world=world,
+                )
             sim_accumulator -= tick_dt
             sim_time += tick_dt
 

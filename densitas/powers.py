@@ -332,7 +332,7 @@ class PowerSystem:
         # Scripture (suppressed by P3-Brush on tiles 2..N**2 of a bulk
         # cast — the first tile of the brush carries the voice).
         if not suppress_scripture:
-            god_key = _god_key_for(faction)
+            god_key = god_key_for(faction)
             line = self._rhetoric(spec.rhetoric_key, god_key, sim_t)
             self.scripture_log.append(ScriptureEntry(sim_t, line, kind, faction))
             if len(self.scripture_log) > self.cfg.scripture_log_max:
@@ -549,7 +549,7 @@ class PowerSystem:
         spec = POWERS[qc.kind]
         tile_id = int(world.tiles[qc.ty, qc.tx])
         ok, _reason = _tile_valid_for(qc.kind, tile_id)
-        god_key = _god_key_for(qc.faction)
+        god_key = god_key_for(qc.faction)
         if not ok:
             self.cooldowns[(qc.faction, int(qc.kind))] = spec.cooldown
             if not qc.suppress_scripture:
@@ -585,11 +585,20 @@ class PowerSystem:
 
 # -- module helpers --------------------------------------------------------
 
-def _god_key_for(faction: int) -> str:
-    """JSON key for the faction's rhetoric block."""
+def god_key_for(faction: int) -> str:
+    """JSON key for the faction's rhetoric block.
+
+    Public since PR4 step 4: `rival_ai.GOD_FORBIDS` is keyed by god, and
+    §6 asks rival_ai to import public APIs only. The underscored name is
+    kept as an alias so nothing that already reaches for it breaks.
+    """
     if faction == 0: return "open_eye"
     if faction == 1: return "maw"
     return f"faction_{faction}"
+
+
+# Back-compat alias for the pre-PR4 private name.
+_god_key_for = god_key_for
 
 
 def _tile_valid_for(kind: PowerKind, tile_id: int) -> tuple[bool, str]:
