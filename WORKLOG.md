@@ -1546,3 +1546,62 @@ gets them shattered), the relic `amplitude` of 20.0, and `retrieve_panic`
 every seed. No exceptions, pool never negative. The remaining criteria
 (≥ 10 casts, ≥ 5 conversions, player relics under shatter threat) are
 step 8's to run properly.
+
+---
+
+## 2026-09-02 — PR4 step 6 follow-up: three defects the smoke runs found
+
+All three were in step 6's own new code, all three found by running the
+game rather than the suite, and none of them would have shown up in a
+unit test written from the spec.
+
+**1. RELIC_PLACE stalled on an unplaceable push point.** `--ai-debug` on
+a live round showed `RELIC_PLACE 0.91` as the top intent for a solid
+minute, and IDLE chosen every time. §8 refines inside one cell and
+re-scores if nothing there is legal — but the push-point anchor barely
+moves between decisions, so when its block is water the intent fails
+refinement every tick, forever. Added `push_point_cells`: the same lerp
+sampled at 1.0 / 0.8 / 0.6 / 0.4 / 0.2 of the forward bias, most-forward
+first. Reads as "plant as far forward as the ground allows", stays
+bounded at five tries, and is a fallback list rather than the scan §8
+rules out.
+
+**2. That fix caused a RELIC_MOVE thrash.** Utility measured drift
+against the *primary* push point while targeting used a *fallback* cell,
+so the gap never closed and the AI re-moved the same flag every other
+decision — relic acts back up to 35 a round. `push_point_tile` now takes
+`world` and answers with the first fallback block holding any walkable
+tile, so the drift maths and the targeting agree on where "forward" is.
+A short-move guard in `_execute` refuses anything inside the deadband as
+well: a move resets `placed_at`, so shuffling a relic two tiles is
+strictly a loss (`Densitas_relics.md` §3.1). Relic acts: 7-16.
+
+**3. `spread` discounted where it should have gated.** Written as a
+plain ratio it only *lowered* RELIC_PLACE's score — the Zealot cleared
+its 0.05 idle floor on the way down and planted all three relics within
+three tiles of each other (observed live: 0.907, then 0.134, then
+0.081). Every citizen it had was then pulled into one attractor disc
+until the local food gave out; rival population peaked at 12 and died of
+starvation. It is now a gate with a ramp, matching RELIC_MOVE's
+deadband: zero until the push point is `_RELIC_SPREAD_TILES` clear of
+every planted flag, ramping to 1.0 at twice that. The AI now plants one,
+gets on with casting, and plants the next as the advance carries the
+push point forward.
+
+**Tests:** 248 / 248 (246 + 2). F7 covers the fallback list (bounded,
+primary first, still finds a tile with the primary block drowned, and
+the reachable push tile skips it too); F8 covers the gate (zero inside
+the spread radius, positive outside, RELIC_PLACE unable to win a tick
+with a relic already under the push point, and an empty tray back to an
+unconditional 1.0).
+
+**Balance after all three, 600 sim_s, ai_seed 0/1/2:** 147 v 0 (rival
+starved, 3 relics shattered), 0 v 34, 0 v 56. Still no middle outcome,
+and the rival now sometimes starves itself by concentrating on its own
+relics. Deliberately not tuned further here — that is step 8's job and
+this entry is already three iterations deep. The dials remain
+`relic_forward_bias`, relic `amplitude` (20.0 is worth twenty citizens
+of belief), `attract_radius` / `attract_probability`, and
+`retrieve_panic`.
+
+Step 8 acceptance, partial: places >= 2 relics on every seed (3, 2, 2).

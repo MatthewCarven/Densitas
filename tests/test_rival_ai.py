@@ -750,3 +750,76 @@ def test_f6_two_rescore_bound_holds():
     assert len(tried) == 3, f"tried {len(tried)} intents, expected 3"
     assert len(set(tried)) == 3, "a dropped intent was picked again"
     assert ai.casts == 0 and ai.relic_acts == 0
+
+
+# -- F7/F8: regressions found by the step-6 smoke runs -------------------------
+
+def test_f7_push_point_falls_back_when_its_block_is_unplaceable():
+    """The primary push cell barely moves between decisions, so if it is
+    unplaceable the AI stalls on it forever - RELIC_PLACE stays the top
+    intent and fails refinement every tick. Observed live at 0.91."""
+    env = _Env()
+    ai = _ai()
+    env.cm.citizens.clear()
+    for _ in range(4):
+        env.cm.citizens.append(env.cm._make_citizen(faction=0, x=4.0, y=12.0,
+                                                    age=10.0))
+    for _ in range(4):
+        env.cm.citizens.append(env.cm._make_citizen(faction=1, x=28.0, y=12.0,
+                                                    age=10.0))
+    s = _sense_only(ai, env)
+
+    cells = ai.push_point_cells(s)
+    assert cells[0] == ai.push_point_cell(s), "primary must be tried first"
+    assert 1 < len(cells) <= 5, "fallbacks must exist and stay bounded"
+
+    # Drown the primary block outright; targeting must still find a tile.
+    for tx, ty in ai.block_tiles(*cells[0]):
+        if env.world.in_bounds(tx, ty):
+            env.world.tiles[ty, tx] = int(Tile.WATER)
+
+    got = ai.target_for(Intent.RELIC_PLACE, s, env.world, env.cm, env.ps,
+                        env.relics)
+    assert got is not None, "stalled on an unplaceable push point"
+    assert is_walkable_tile(int(env.world.tiles[got[1], got[0]]))
+    assert env.relics.can_place(1, ai.place_slot(s), got[0], got[1],
+                                env.world)[0]
+
+    # The reachability-aware push tile skips the drowned block too, so the
+    # drift maths and the targeting agree on where "forward" is.
+    reachable = ai.push_point_tile(s, env.world)
+    assert reachable is not None
+    assert reachable != ai.push_point_tile(s)
+
+
+def test_f8_spread_gates_rather_than_merely_discounts():
+    """`spread` began life as a plain ratio, which only lowered the score:
+    the Zealot cleared its 0.05 idle floor on the way down and stacked all
+    three relics within three tiles, starving itself. It must gate."""
+    env = _Env()
+    ai = _ai()
+    assert env.relics.place(1, 0, 16, 12, env.world, 0.0)[0]
+    s = _sense_only(ai, env)
+
+    near = (17, 13)                                  # ~1.4 tiles away
+    far = (16 + 40, 12)                              # well clear
+    assert ai.spread(s, near) == 0.0
+    assert ai.spread(s, far) > 0.0
+
+    # With a relic already down, a push point on top of it scores nothing,
+    # so RELIC_PLACE cannot win the tick.
+    class _StuckAI(type(ai)):
+        def push_point_tile(self, s, world=None):
+            return near
+
+    stuck = _StuckAI(1, ai.p, _rival_cfg(), _power_cfg(), seed=0)
+    stuck._tpc_x, stuck._tpc_y = (env.belief.tiles_per_cell_x,
+                                  env.belief.tiles_per_cell_y)
+    stuck._grid_w, stuck._grid_h = env.belief.grid_w, env.belief.grid_h
+    u = stuck.utilities(s, env.ps, env.cm, env.world)
+    assert u[Intent.RELIC_PLACE] == 0.0
+    assert stuck.score(u)[Intent.RELIC_PLACE] == 0.0
+
+    # An empty tray is still the unconditional 1.0 - nothing to stack on.
+    assert env.relics.retrieve(1, 0, 1.0)[0]
+    assert ai.spread(_sense_only(ai, env), near) == 1.0

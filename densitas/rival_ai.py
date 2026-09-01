@@ -61,6 +61,12 @@ _DRIFT_REF_TILES = 32.0
 # intent scores zero; above it the ramp runs to `_DRIFT_REF_TILES`.
 _MOVE_DEADBAND_TILES = 8.0
 
+# Fractions of `relic_forward_bias` sampled when the push point itself is
+# unplaceable, most-forward first. Bounded and small on purpose: §8 wants
+# no scanning loops, and this is "plant as far forward as the ground
+# allows", not a search.
+_PUSH_FALLBACK_FRACTIONS = (1.0, 0.8, 0.6, 0.4, 0.2)
+
 # Distance (world tiles) at which a new relic counts as fully clear of the
 # ones already planted. Below it, RELIC_PLACE's utility falls off, so the
 # three flags spread along the advance instead of stacking on one tile.
@@ -452,7 +458,7 @@ class RivalAI:
         # same-faction attractor list, which drags the belief field
         # forward with them. Deviation agreed 2026-09-02; see the worklog.
         if s.own_free_slots and s.n_slots > 0:
-            push = self.push_point_tile(s)
+            push = self.push_point_tile(s, world)
             if push is not None:
                 u[Intent.RELIC_PLACE] = clamp01(
                     (len(s.own_free_slots) / s.n_slots)
@@ -461,9 +467,9 @@ class RivalAI:
         # RELIC_MOVE - how far the rear-most relic has fallen behind the
         # push point the seam has drifted to, past a deadband so a flag
         # that is roughly where it should be gets left alone.
-        rear = self.rear_most(s)
+        rear = self.rear_most(s, world)
         if rear is not None:
-            push = self.push_point_tile(s)
+            push = self.push_point_tile(s, world)
             if push is not None:
                 drift = dist((rear.tx, rear.ty), push)
                 span = max(_EPS, _DRIFT_REF_TILES - _MOVE_DEADBAND_TILES)
@@ -510,7 +516,33 @@ class RivalAI:
     # -- targeting (§8) ------------------------------------------------------
 
     def push_point_cell(self, s: Senses) -> Optional[tuple[int, int]]:
-        """`lerp(seam_peak_cell, enemy_centroid, forward_bias)`, snapped.
+        """The push point at this personality's full forward bias."""
+        return self.push_cell_at(s, clamp01(self.p.relic_forward_bias))
+
+    def push_point_cells(self, s: Senses) -> list[tuple[int, int]]:
+        """The push point plus fallbacks walking back toward home.
+
+        §8 refines inside one cell and re-scores if nothing in it is
+        legal, which stalls hard when the push point lands on water: the
+        anchor barely moves between decisions, so RELIC_PLACE stays the
+        top-scoring intent and fails refinement every single tick.
+        Observed live at 0.91 and unplaceable for a solid minute of play.
+
+        Sampling the same lerp at decreasing bias reads as "plant as far
+        forward as the ground allows" and stays bounded at five tries -
+        a fallback list, not a scan.
+        """
+        t0 = clamp01(self.p.relic_forward_bias)
+        out: list[tuple[int, int]] = []
+        for frac in _PUSH_FALLBACK_FRACTIONS:
+            cell = self.push_cell_at(s, t0 * frac)
+            if cell is not None and cell not in out:
+                out.append(cell)
+        return out
+
+    def push_cell_at(self, s: Senses,
+                     t: float) -> Optional[tuple[int, int]]:
+        """`lerp(seam_peak_cell, enemy_centroid, t)`, snapped.
 
         Degenerate board: before the two fields touch, `seam` is zero
         everywhere and its argmax is cell (0, 0) by tie-break - a map
@@ -532,15 +564,35 @@ class RivalAI:
         # The centroid arrives in world tiles; the lerp happens in cells.
         ecx = ex / max(1, self._tpc_x)
         ecy = ey / max(1, self._tpc_y)
-        t = clamp01(self.p.relic_forward_bias)
+        t = clamp01(t)
         gx = int(round(cx + (ecx - cx) * t))
         gy = int(round(cy + (ecy - cy) * t))
         gx = max(0, min(max(0, self._grid_w - 1), gx))
         gy = max(0, min(max(0, self._grid_h - 1), gy))
         return (gx, gy)
 
-    def push_point_tile(self, s: Senses) -> Optional[tuple[int, int]]:
-        """The push point as a world tile (block centre, unrefined)."""
+    def push_point_tile(self, s: Senses,
+                        world: Optional[World] = None
+                        ) -> Optional[tuple[int, int]]:
+        """The push point as a world tile (block centre, unrefined).
+
+        Given `world`, walks the same fallback list `target_for` uses and
+        answers with the first block that holds any walkable tile - so
+        the drift maths measures against a push point we can actually
+        reach. Without that, RELIC_MOVE compares its relics to an
+        unreachable anchor, never closes the gap, and re-moves the same
+        flag every other decision (observed: relic acts back up to 35 a
+        round after the fallback landed). Cheap: a walkability scan of at
+        most five blocks, no dry runs and no RNG.
+        """
+        if world is not None:
+            for cx, cy in self.push_point_cells(s):
+                for tx, ty in self.block_tiles(cx, cy):
+                    if world.in_bounds(tx, ty) and is_walkable_tile(
+                            int(world.tiles[ty, tx])):
+                        return (cx * self._tpc_x + self._tpc_x // 2,
+                                cy * self._tpc_y + self._tpc_y // 2)
+            return None
         cell = self.push_point_cell(s)
         if cell is None:
             return None
@@ -551,15 +603,23 @@ class RivalAI:
     def spread(self, s: Senses, push: tuple[int, int]) -> float:
         """How clear the push point is of the relics we already planted.
 
-        1.0 with nothing placed yet, falling toward 0 as the push point
-        closes on an existing flag. Without it a Zealot dumps all three
-        relics on the first good tile; with it, it plants one, advances
-        behind the attractor pull, and plants the next further along.
+        1.0 with nothing placed yet, then a hard zero until the push
+        point is `_RELIC_SPREAD_TILES` clear of every flag already
+        planted, ramping to 1.0 at twice that.
+
+        It started life as a plain ratio, which only *lowered* the score
+        instead of gating it: the Zealot still cleared its 0.05 idle
+        floor on the way down and stacked all three relics within three
+        tiles of each other, concentrating every citizen it had into one
+        attractor disc until the local food gave out. A gate, like
+        RELIC_MOVE's deadband, is what the term was always meant to be.
         """
         if not s.own_placed:
             return 1.0
         nearest = min(dist((r.tx, r.ty), push) for r in s.own_placed)
-        return clamp01(nearest / _RELIC_SPREAD_TILES)
+        if nearest < _RELIC_SPREAD_TILES:
+            return 0.0
+        return clamp01((nearest - _RELIC_SPREAD_TILES) / _RELIC_SPREAD_TILES)
 
     def place_slot(self, s: Senses) -> Optional[int]:
         """The slot RELIC_PLACE would consume: the lowest free one.
@@ -569,12 +629,13 @@ class RivalAI:
         """
         return s.own_free_slots[0] if s.own_free_slots else None
 
-    def rear_most(self, s: Senses) -> Optional[Relic]:
+    def rear_most(self, s: Senses,
+                  world: Optional[World] = None) -> Optional[Relic]:
         """The placed relic furthest from the push point - the one most
         out of position, hence the one worth moving forward."""
         if not s.own_placed:
             return None
-        push = self.push_point_tile(s)
+        push = self.push_point_tile(s, world)
         if push is None:
             return None
         return max(s.own_placed, key=lambda r: dist((r.tx, r.ty), push))
@@ -691,30 +752,28 @@ class RivalAI:
 
         # PLACE and MOVE both aim at the push point, and both refine
         # against the real relic API's dry run (added in step 6), so a
-        # refined tile is one the verb will actually accept.
-        cell = self.push_point_cell(s)
-        if cell is None:
-            return None
+        # refined tile is one the verb will actually accept. If the push
+        # point itself is unplaceable we walk back toward home rather
+        # than give up on the tick - see `push_point_cells`.
         if intent == Intent.RELIC_PLACE:
             slot = self.place_slot(s)
             if slot is None:
                 return None
-            return self.refine(
-                cell, world,
-                lambda tx, ty: relic_mgr.can_place(
-                    self.faction, slot, tx, ty, world)[0],
-                require_walkable=True,
-            )
-        if intent == Intent.RELIC_MOVE:
-            rear = self.rear_most(s)
+            ok = lambda tx, ty: relic_mgr.can_place(
+                self.faction, slot, tx, ty, world)[0]
+        elif intent == Intent.RELIC_MOVE:
+            rear = self.rear_most(s, world)
             if rear is None:
                 return None
-            return self.refine(
-                cell, world,
-                lambda tx, ty: relic_mgr.can_move(
-                    self.faction, rear.slot, tx, ty, world)[0],
-                require_walkable=True,
-            )
+            ok = lambda tx, ty: relic_mgr.can_move(
+                self.faction, rear.slot, tx, ty, world)[0]
+        else:
+            return None
+
+        for cell in self.push_point_cells(s):
+            got = self.refine(cell, world, ok, require_walkable=True)
+            if got is not None:
+                return got
         return None
 
     # -- the decision --------------------------------------------------------
@@ -807,9 +866,14 @@ class RivalAI:
             ok, why = relic_mgr.place(self.faction, slot, tx, ty,
                                       world, sim_t)
         elif intent == Intent.RELIC_MOVE:
-            rear = self.rear_most(s)
+            rear = self.rear_most(s, world)
             if rear is None:
                 return False, "nothing placed to move"
+            # A move resets `placed_at`, so the relic pays a full
+            # belief fade-in for the privilege (`Densitas_relics.md`
+            # §3.1). Shuffling it a couple of tiles is strictly a loss.
+            if dist((rear.tx, rear.ty), (tx, ty)) <= _MOVE_DEADBAND_TILES:
+                return False, "move too short to pay for its fade-in"
             ok, why = relic_mgr.move(self.faction, rear.slot, tx, ty,
                                      world, sim_t)
         elif intent == Intent.RELIC_RETRIEVE:
