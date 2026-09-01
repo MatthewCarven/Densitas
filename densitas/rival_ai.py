@@ -4,12 +4,12 @@ One decision every `ai_base_period / difficulty` sim seconds: sense the
 board, score every intent, act on the argmax if it beats `idle_floor`.
 Cadence is the *only* thing difficulty touches (pillar 2).
 
-**Step 5: the cast intents are live.** CURSE, HUNGER_PANG, LOWER and
-BLESS now go out through `PowerSystem.cast_or_queue` - the same entry
-point a player click uses, so the rival pays the same belief, burns the
-same cooldowns, obeys the same `can_cast`, and voices the same scripture
-path keyed by its own god. The three relic intents are still scored and
-targeted but not executed; they land in step 6.
+**Steps 5-6: every intent is live.** The four cast intents go out
+through `PowerSystem.cast_or_queue` and the three relic intents through
+`RelicManager.place / move / retrieve` - the same entry points a player
+click uses, so the rival pays the same belief, burns the same cooldowns,
+obeys the same `can_cast` / `can_place`, and voices the same scripture
+path keyed by its own god.
 
 Dependency direction: only `main.py` imports this module, and this module
 imports only public APIs of the others (§6). Note `god_key_for` was
@@ -52,6 +52,20 @@ _LOWER_SCAN_CELLS = 8
 # position for RELIC_MOVE's utility. 32 tiles = 8 belief cells. Opening
 # bid; step 8's balance pass owns it.
 _DRIFT_REF_TILES = 32.0
+
+# Drift (world tiles) a placed relic must be out of position before
+# RELIC_MOVE will touch it. Without a deadband the rear-most relic is
+# always *some* distance from the push point, so the AI spends half its
+# decisions shuffling flags it has already planted (measured: 157 relic
+# acts in 300 decisions before this existed). Below the deadband the
+# intent scores zero; above it the ramp runs to `_DRIFT_REF_TILES`.
+_MOVE_DEADBAND_TILES = 8.0
+
+# Distance (world tiles) at which a new relic counts as fully clear of the
+# ones already planted. Below it, RELIC_PLACE's utility falls off, so the
+# three flags spread along the advance instead of stacking on one tile.
+# 16 tiles = 4 belief cells.
+_RELIC_SPREAD_TILES = 16.0
 
 
 class Intent(enum.IntEnum):
@@ -267,7 +281,8 @@ class RivalAI:
 
         self._accum = 0.0
         self.decisions = 0
-        self.casts = 0        # verbs that actually went out (step 5)
+        self.casts = 0        # cast verbs that went out (step 5)
+        self.relic_acts = 0   # relic verbs that went out (step 6)
         self.refused = 0      # scored feasible, then refused at the verb
         self.log: deque[DecisionRecord] = deque(maxlen=self.RING)
 
@@ -424,19 +439,37 @@ class RivalAI:
             if ridge is not None:
                 u[Intent.CAST_LOWER] = ridge[1]
 
-        # RELIC_PLACE - free slots x how much the fields actually touch.
+        # RELIC_PLACE - free slots x how much new ground the push point
+        # claims.
+        #
+        # Section 8 scores this on `seam_overlap`, but steps 4 and 5
+        # measured a default round and found the two fields never touch at
+        # all: zero belief cells carry both. That formula therefore leaves
+        # the rival's relics in the tray for the whole game, and puts step
+        # 8's acceptance bar out of reach. Keyed off the push point
+        # instead, so relics *make* the contact rather than wait for it -
+        # a placed relic pulls our own citizens toward it through the
+        # same-faction attractor list, which drags the belief field
+        # forward with them. Deviation agreed 2026-09-02; see the worklog.
         if s.own_free_slots and s.n_slots > 0:
-            u[Intent.RELIC_PLACE] = clamp01(
-                (len(s.own_free_slots) / s.n_slots) * s.seam_overlap)
+            push = self.push_point_tile(s)
+            if push is not None:
+                u[Intent.RELIC_PLACE] = clamp01(
+                    (len(s.own_free_slots) / s.n_slots)
+                    * self.spread(s, push))
 
         # RELIC_MOVE - how far the rear-most relic has fallen behind the
-        # push point the seam has drifted to.
+        # push point the seam has drifted to, past a deadband so a flag
+        # that is roughly where it should be gets left alone.
         rear = self.rear_most(s)
         if rear is not None:
             push = self.push_point_tile(s)
             if push is not None:
-                u[Intent.RELIC_MOVE] = clamp01(
-                    dist((rear.tx, rear.ty), push) / _DRIFT_REF_TILES)
+                drift = dist((rear.tx, rear.ty), push)
+                span = max(_EPS, _DRIFT_REF_TILES - _MOVE_DEADBAND_TILES)
+                if drift > _MOVE_DEADBAND_TILES:
+                    u[Intent.RELIC_MOVE] = clamp01(
+                        (drift - _MOVE_DEADBAND_TILES) / span)
 
         # RELIC_RETRIEVE - dead flat until `retrieve_panic`, then ramps.
         if s.own_placed:
@@ -514,6 +547,27 @@ class RivalAI:
         cx, cy = cell
         return (cx * self._tpc_x + self._tpc_x // 2,
                 cy * self._tpc_y + self._tpc_y // 2)
+
+    def spread(self, s: Senses, push: tuple[int, int]) -> float:
+        """How clear the push point is of the relics we already planted.
+
+        1.0 with nothing placed yet, falling toward 0 as the push point
+        closes on an existing flag. Without it a Zealot dumps all three
+        relics on the first good tile; with it, it plants one, advances
+        behind the attractor pull, and plants the next further along.
+        """
+        if not s.own_placed:
+            return 1.0
+        nearest = min(dist((r.tx, r.ty), push) for r in s.own_placed)
+        return clamp01(nearest / _RELIC_SPREAD_TILES)
+
+    def place_slot(self, s: Senses) -> Optional[int]:
+        """The slot RELIC_PLACE would consume: the lowest free one.
+
+        Deterministic on `s`, so `target_for` and `_execute` can each
+        derive it without threading a choice between them.
+        """
+        return s.own_free_slots[0] if s.own_free_slots else None
 
     def rear_most(self, s: Senses) -> Optional[Relic]:
         """The placed relic furthest from the push point - the one most
@@ -635,15 +689,33 @@ class RivalAI:
             r = self.most_threatened(s)
             return (r.tx, r.ty) if r is not None else None
 
-        # PLACE and MOVE both aim at the push point. Tile-level validity
-        # against the real relic API is step 6's - `RelicManager` has no
-        # public dry-run, and step 4 executes nothing, so a walkable tile
-        # inside the push-point block is an honest target to log.
+        # PLACE and MOVE both aim at the push point, and both refine
+        # against the real relic API's dry run (added in step 6), so a
+        # refined tile is one the verb will actually accept.
         cell = self.push_point_cell(s)
         if cell is None:
             return None
-        return self.refine(cell, world, lambda tx, ty: True,
-                           require_walkable=True)
+        if intent == Intent.RELIC_PLACE:
+            slot = self.place_slot(s)
+            if slot is None:
+                return None
+            return self.refine(
+                cell, world,
+                lambda tx, ty: relic_mgr.can_place(
+                    self.faction, slot, tx, ty, world)[0],
+                require_walkable=True,
+            )
+        if intent == Intent.RELIC_MOVE:
+            rear = self.rear_most(s)
+            if rear is None:
+                return None
+            return self.refine(
+                cell, world,
+                lambda tx, ty: relic_mgr.can_move(
+                    self.faction, rear.slot, tx, ty, world)[0],
+                require_walkable=True,
+            )
+        return None
 
     # -- the decision --------------------------------------------------------
 
@@ -724,9 +796,40 @@ class RivalAI:
             self.refused += 1
             return False, f"refused: {receipt.reason}"
 
-        # RELIC_PLACE / MOVE / RETRIEVE - scored and targeted, not yet
-        # executed. Step 6.
-        return False, "no-op until step 6"
+        # Relic verbs (step 6). The slot is re-derived from the same
+        # `Senses` the target was chosen against, so it cannot disagree
+        # with what `target_for` refined for.
+        tx, ty = int(target[0]), int(target[1])
+        if intent == Intent.RELIC_PLACE:
+            slot = self.place_slot(s)
+            if slot is None:
+                return False, "no free slot"
+            ok, why = relic_mgr.place(self.faction, slot, tx, ty,
+                                      world, sim_t)
+        elif intent == Intent.RELIC_MOVE:
+            rear = self.rear_most(s)
+            if rear is None:
+                return False, "nothing placed to move"
+            ok, why = relic_mgr.move(self.faction, rear.slot, tx, ty,
+                                     world, sim_t)
+        elif intent == Intent.RELIC_RETRIEVE:
+            worst = self.most_threatened(s)
+            if worst is None:
+                return False, "nothing placed to retrieve"
+            ok, why = relic_mgr.retrieve(self.faction, worst.slot, sim_t)
+        else:
+            return False, f"no verb for {intent.name}"
+
+        if not ok:
+            self.refused += 1
+            return False, f"refused: {why}"
+        self.relic_acts += 1
+        # Citizen attractors are rebuilt from PLACED relics, so any relic
+        # mutation invalidates them. main.py re-syncs after a player
+        # placement and after a shatter; the AI owes the same for its own.
+        citizens.sync_attractors_from_relics(
+            relic_mgr.relics, self.powers_cfg.relic.attract_radius)
+        return True, why
 
 
 # -- helpers -----------------------------------------------------------------

@@ -1463,3 +1463,86 @@ t=7.8 then one every 4-6 sim_s, targets tracking the player cluster.
 - **The uncontested-map seam problem from step 4 stands.** A default
   round still never makes contact, so the rival's whole repertoire is
   Hunger Pang. Unchanged by step 5; still step 6's to solve.
+
+---
+
+## 2026-09-02 — PR4 step 6: relic intents live, and the Maw starts winning
+
+Spec: `Densitas_rival_ai.md` §8 (amended, below), §12-F, §13 step 6.
+
+- **`RelicManager.can_place` / `can_move`** (new, public) — dry runs of
+  `place` / `move`. There was no way to ask "would this land?" without
+  mutating, which the AI needs during tile refinement. `place` and `move`
+  are now implemented *on top of* them, so the check and the verb cannot
+  drift apart. All 104 existing relic tests pass unchanged.
+- **`RivalAI._execute`** — the three relic verbs go out through the real
+  API, and every successful one re-syncs `citizen_mgr.attractors`, which
+  main.py already does after a player placement and after a shatter. Miss
+  that and a placed relic pulls nobody, which is the entire point of
+  placing it.
+- **Relic targeting refines against the dry runs**, so a refined tile is
+  one the verb will actually accept. The slot is re-derived from the same
+  `Senses` in `target_for` and `_execute` rather than threaded between
+  them — both are pure functions of `s`, so they cannot disagree.
+
+**§8 amendment (agreed with Matthew, recorded in the spec doc).**
+RELIC_PLACE was specced as `free slots × seam opportunity`. Steps 4 and 5
+measured a default round and found the fields never touch — zero cells
+carry both — so that formula scores 0 for the whole game and the rival
+never places anything. It is now `free_slots_fraction × spread`, where
+`spread` is how clear the push point is of the flags already planted, and
+the push point anchors on `own_centroid` when there is no seam. Relics
+now *make* contact instead of waiting for it, via the same-faction
+attractor pull.
+
+**Fixed during the smoke run: RELIC_MOVE thrash.** The rear-most relic is
+always *some* distance from the push point, so with a bare
+`drift / _DRIFT_REF_TILES` utility the AI spent half its decisions
+shuffling flags it had already planted — 157 relic acts in 300 decisions
+on ai_seed 1. Added `_MOVE_DEADBAND_TILES` (8.0): below it the intent
+scores zero, above it the ramp runs to `_DRIFT_REF_TILES`. Relic acts
+dropped to 10-11 per 600 sim_s round, which is three placements plus a
+few genuine repositions.
+
+**Tests:** 246 / 246 headless (240 + 6), `SDL_VIDEODRIVER=dummy`,
+`--assert=plain`. Group F: push-point lerp and snap (including the
+bias-0 and bias-1 endpoints), place consuming a slot through the real API
+with no two relics stacked and the attractor list re-synced, retrieve
+staying at exactly 0 up to and including `retrieve_panic` then ramping
+linearly, move targeting the rear-most slot and leaving the forward one
+alone, refinement returning the single walkable tile in a drowned block
+40 times running and `None` when that tile drowns too, and the two-
+rescore bound stopping after exactly three distinct picks.
+
+E1 was updated: its "no relic verb has executed yet" assertion was
+written in step 5 to fail when step 6 landed, and it did.
+
+**Balance finding — the Maw is now decisive, in both directions.**
+Three 600 sim_s default rounds (ai_seed 0/1/2), player vs rival:
+
+| seed | final | rival relics | relic acts |
+|---|---|---|---|
+| 0 | 160 v 26 | 3 SHATTERED | 4 |
+| 1 | **0** v 44 | 3 PLACED | 10 |
+| 2 | **0** v 26 | 3 PLACED | 11 |
+
+Either the rival plants its three flags forward and the player faction is
+converted/despaired out of existence, or it overextends, loses all three
+to the shatter rule, and withers to a quarter of the player's size. There
+is no middle outcome in three seeds. That is the step-2 conversion
+machinery and the step-6 relic push working exactly as built — a placed
+relic is worth 20 citizens of belief amplitude, and three of them inside
+enemy territory flip the faith gradient wholesale.
+
+Per §13 this is in scope for step 6 ("the bar is that the Maw is
+*present*, not that it is balanced") and squarely step 8's problem, but
+it is worth saying plainly: **a default round is currently unwinnable or
+trivially winnable depending on the seed.** The obvious dials are
+`relic_forward_bias` (0.65 plants deep in enemy ground, which is what
+gets them shattered), the relic `amplitude` of 20.0, and `retrieve_panic`
+0.75 letting them burn.
+
+**Step 8 acceptance, measured early:** places ≥ 2 relics — yes, 3 on
+every seed. No exceptions, pool never negative. The remaining criteria
+(≥ 10 casts, ≥ 5 conversions, player relics under shatter threat) are
+step 8's to run properly.

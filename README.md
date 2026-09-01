@@ -145,11 +145,14 @@ player click does, pays the same belief, and waits out the same
 cooldowns. Three personalities ship (`zealot`, `steward`, `trickster`);
 the Zealot is the tuned one.
 
-As of PR4 step 5 the rival **casts for real** — curse, hunger pang and
-lower go out through the same `cast_or_queue` a player click uses, and
-its scripture lands in the same log. Its relic verbs are scored and
-targeted but still inert; those land in step 6. Watch it think with
-`--ai-debug`.
+As of PR4 step 6 the rival **plays for real** — curse, hunger pang and
+lower go out through the same `cast_or_queue` a player click uses, and it
+plants, moves and recovers its own relics through the same
+`RelicManager` API, scripture and all. Watch it think with `--ai-debug`.
+
+It is not balanced yet. A Zealot that gets its relics planted will
+usually convert the player faction out of existence; one that overextends
+loses all three to the shatter rule and withers. Balance is step 8's.
 
 ### Debug flags
 

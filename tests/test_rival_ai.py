@@ -43,12 +43,12 @@ from densitas.config import (
 )
 from densitas.food import FoodField
 from densitas.powers import PowerKind, PowerSystem, god_key_for
-from densitas.relics import RelicManager
+from densitas.relics import RelicManager, RelicState
 from densitas.rival_ai import (
     GOD_FORBIDS, PERSONALITIES, SCORED_INTENTS, AIPersonality, DecisionRecord,
-    Intent, RivalAI, argmax_cell, centroid, make_rival_ai,
+    Intent, RivalAI, argmax_cell, centroid, dist, make_rival_ai,
 )
-from densitas.world import Tile, World
+from densitas.world import Tile, World, is_walkable_tile
 
 
 # -- fixtures ----------------------------------------------------------------
@@ -466,6 +466,9 @@ def test_d0_presets_and_factory_are_well_formed():
 # All weights maxed, no reserve, no idle floor: whatever the board offers,
 # this brain reaches for it. The point is that maximum aggression still
 # cannot get around `can_cast`.
+_RELIC_INTENTS = {Intent.RELIC_PLACE, Intent.RELIC_MOVE,
+                  Intent.RELIC_RETRIEVE}
+
 _AGGRESSIVE = dataclasses.replace(
     PERSONALITIES["zealot"], name="forced-aggressive",
     w_curse=1.0, w_hunger_pang=1.0, w_lower=1.0, w_bless=1.0,
@@ -526,11 +529,12 @@ def test_e1_every_executed_cast_passed_can_cast():
     assert ai.casts == len(spy.calls)
     assert ai.refused == 0, "a scored-feasible cast was refused at the verb"
 
-    # Relic verbs are step 6: they can still win a decision, but nothing
-    # executes yet. This assertion is expected to flip when step 6 lands.
-    relic_intents = {Intent.RELIC_PLACE, Intent.RELIC_MOVE,
-                     Intent.RELIC_RETRIEVE}
-    assert all(not r.executed for r in ai.log if r.intent in relic_intents)
+    # Relic verbs went live in step 6, so the same-rules property has to
+    # cover them too: each one that won a decision went through the real
+    # RelicManager API and was accepted.
+    relic_records = [r for r in ai.log if r.intent in _RELIC_INTENTS]
+    assert ai.relic_acts > 0, "the property run must exercise relic verbs too"
+    assert all(r.executed for r in relic_records),         "a relic verb was refused after scoring feasible"
 
 
 def test_e2_pool_never_goes_negative():
@@ -559,3 +563,190 @@ def test_e3_maw_never_blesses_under_load():
     eye, _env, eye_spy, _ = _property_run(faction=0)
     assert eye.god_key == "open_eye"
     assert PowerKind.BLESS in {c[0] for c in eye_spy.calls}
+
+
+# -- F: relic intents (spec §12 group F) --------------------------------------
+
+def _sense_only(ai, env):
+    return ai.sense(sim_t=env.sim_t, citizens=env.cm, belief=env.belief,
+                    relic_mgr=env.relics, power_system=env.ps)
+
+
+def test_f1_push_point_lerps_and_snaps():
+    env = _Env()
+    ai = _ai()                                  # zealot, forward bias 0.65
+    tpc_x, tpc_y = env.belief.tiles_per_cell_x, env.belief.tiles_per_cell_y
+
+    # A real seam at cell (4, 4), and an enemy centroid at cell (12, 8).
+    env.belief.field[:] = 0.0
+    env.belief.field[1, 4, 4] = 3.0
+    env.belief.field[0, 4, 4] = 3.0             # product peaks here
+    env.cm.citizens.clear()
+    for _ in range(4):
+        env.cm.citizens.append(env.cm._make_citizen(
+            faction=0, x=12.0 * tpc_x, y=8.0 * tpc_y, age=10.0))
+    env.cm.citizens.append(env.cm._make_citizen(
+        faction=1, x=4.0 * tpc_x, y=4.0 * tpc_y, age=10.0))
+
+    s = _sense_only(ai, env)
+    assert s.seam_peak_cell == (4, 4)
+
+    t = ai.p.relic_forward_bias
+    assert ai.push_point_cell(s) == (round(4 + (12 - 4) * t),
+                                     round(4 + (8 - 4) * t))
+    # Snapped to a cell, then to that cell's block centre in world tiles.
+    cx, cy = ai.push_point_cell(s)
+    assert ai.push_point_tile(s) == (cx * tpc_x + tpc_x // 2,
+                                     cy * tpc_y + tpc_y // 2)
+
+    # Bias 0 stays on the seam; bias 1 lands on the enemy centroid.
+    home = RivalAI(1, dataclasses.replace(PERSONALITIES["zealot"],
+                                          relic_forward_bias=0.0),
+                   _rival_cfg(), _power_cfg(), seed=0)
+    throat = RivalAI(1, dataclasses.replace(PERSONALITIES["zealot"],
+                                            relic_forward_bias=1.0),
+                     _rival_cfg(), _power_cfg(), seed=0)
+    assert home.push_point_cell(_sense_only(home, env)) == (4, 4)
+    assert throat.push_point_cell(_sense_only(throat, env)) == (12, 8)
+
+
+def test_f2_place_consumes_a_slot_through_the_real_api():
+    ai, env, spy, _ = _property_run(ticks=120)
+
+    placed = env.relics.placed_for_faction(1)
+    assert placed, "the rival never planted a flag"
+    assert ai.relic_acts >= len(placed)
+
+    # Slots came out of the tray, and every placed relic sits on a tile
+    # the real API accepted (walkable, in bounds, no same-faction stack).
+    free = [r for r in env.relics.for_faction(1)
+            if r.state == RelicState.AVAILABLE]
+    assert len(placed) + len(free) == len(env.relics.for_faction(1))
+    seen = set()
+    for r in placed:
+        assert env.world.in_bounds(r.tx, r.ty)
+        assert is_walkable_tile(int(env.world.tiles[r.ty, r.tx]))
+        assert (r.tx, r.ty) not in seen, "two relics stacked on one tile"
+        seen.add((r.tx, r.ty))
+
+    # And the citizen attractor list was re-synced, or the placement
+    # would pull nobody and the whole point would be lost.
+    assert any(a[3] == 1 for a in env.cm.attractors)
+
+
+def test_f3_retrieve_only_fires_past_retrieve_panic():
+    env = _Env()
+    ai = _ai()                                  # zealot: retrieve_panic 0.75
+    shatter_time = env.relics.cfg.shatter_time
+    ok, _why = env.relics.place(1, 0, 16, 12, env.world, 0.0)
+    assert ok
+
+    def utility_at(threat_fraction):
+        env.relics.get(1, 0).threat_timer = threat_fraction * shatter_time
+        s = _sense_only(ai, env)
+        assert s.max_threat_frac == pytest.approx(threat_fraction)
+        return ai.utilities(s, env.ps, env.cm, env.world)[Intent.RELIC_RETRIEVE]
+
+    assert utility_at(0.00) == 0.0
+    assert utility_at(0.50) == 0.0
+    assert utility_at(0.75) == 0.0              # at the panic point, not past
+    # Past it the ramp is linear to 1.0 at a full shatter timer.
+    assert utility_at(0.80) == pytest.approx((0.80 - 0.75) / 0.25)
+    assert utility_at(1.00) == pytest.approx(1.0)
+
+
+def test_f4_move_targets_the_rear_most_relic():
+    env = _Env()
+    ai = _ai()
+    env.cm.citizens.clear()
+    for _ in range(4):
+        env.cm.citizens.append(env.cm._make_citizen(faction=0, x=6.0, y=6.0,
+                                                    age=10.0))
+    for _ in range(4):
+        env.cm.citizens.append(env.cm._make_citizen(faction=1, x=26.0, y=18.0,
+                                                    age=10.0))
+
+    # Slot 0 near the enemy, slot 1 far behind it. Rear-most is slot 1.
+    assert env.relics.place(1, 0, 10, 9, env.world, 0.0)[0]
+    assert env.relics.place(1, 1, 30, 22, env.world, 0.0)[0]
+
+    s = _sense_only(ai, env)
+    push = ai.push_point_tile(s)
+    rear = ai.rear_most(s)
+    assert rear is not None and rear.slot == 1
+    assert dist((rear.tx, rear.ty), push) > dist((10, 9), push)
+
+    # And the verb moves that slot, not the forward one.
+    before = (env.relics.get(1, 0).tx, env.relics.get(1, 0).ty)
+    executed, why = ai._execute(
+        Intent.RELIC_MOVE, push, s, sim_t=1.0, citizens=env.cm,
+        world=env.world, food=env.food, belief=env.belief,
+        relic_mgr=env.relics, power_system=env.ps)
+    assert executed, why
+    assert (env.relics.get(1, 1).tx, env.relics.get(1, 1).ty) == push
+    assert (env.relics.get(1, 0).tx, env.relics.get(1, 0).ty) == before
+    assert env.relics.get(1, 1).times_moved == 1
+
+
+def test_f5_refinement_never_yields_an_unwalkable_tile():
+    env = _Env()
+    ai = _ai()
+    tpc_x, tpc_y = env.belief.tiles_per_cell_x, env.belief.tiles_per_cell_y
+
+    # Drown a whole cell block except one tile, then refine into it many
+    # times - the seeded shuffle must never hand back the water.
+    cell = (5, 5)
+    block = [(cell[0] * tpc_x + i, cell[1] * tpc_y + j)
+             for j in range(tpc_y) for i in range(tpc_x)]
+    survivor = block[-1]
+    for tx, ty in block:
+        if (tx, ty) != survivor:
+            env.world.tiles[ty, tx] = int(Tile.WATER)
+
+    ai._tpc_x, ai._tpc_y = tpc_x, tpc_y
+    ai._grid_w, ai._grid_h = env.belief.grid_w, env.belief.grid_h
+    for _ in range(40):
+        got = ai.refine(cell, env.world,
+                        lambda tx, ty: env.relics.can_place(
+                            1, 0, tx, ty, env.world)[0],
+                        require_walkable=True)
+        assert got == survivor
+        assert is_walkable_tile(int(env.world.tiles[got[1], got[0]]))
+
+    # Flood the survivor too and refinement reports failure rather than
+    # returning something illegal - that None is what triggers a re-score.
+    env.world.tiles[survivor[1], survivor[0]] = int(Tile.WATER)
+    assert ai.refine(cell, env.world,
+                     lambda tx, ty: env.relics.can_place(
+                         1, 0, tx, ty, env.world)[0],
+                     require_walkable=True) is None
+
+
+def test_f6_two_rescore_bound_holds():
+    env = _Env(initial_pop=12)
+    env.stuff(12, faction=1, at=(16, 12))
+    env.ps.pool[1] = 200.0
+    env.advance(0.2)
+    env.sim_t += 0.2
+
+    ai = RivalAI(1, _AGGRESSIVE, _rival_cfg(), _power_cfg(), seed=5)
+
+    # Every target is unrefinable, so each pick is dropped and re-scored.
+    tried = []
+
+    def _never(intent, *a, **kw):
+        tried.append(intent)
+        return None
+
+    ai.target_for = _never
+    rec = ai._decide(sim_t=env.sim_t, citizens=env.cm, belief=env.belief,
+                     relic_mgr=env.relics, power_system=env.ps,
+                     world=env.world, food=env.food)
+
+    assert rec.intent is Intent.IDLE
+    assert rec.note == "re-score bound reached"
+    assert rec.target is None and not rec.executed
+    # One pick plus exactly two re-scores, then it stops. No scan loop.
+    assert len(tried) == 3, f"tried {len(tried)} intents, expected 3"
+    assert len(set(tried)) == 3, "a dropped intent was picked again"
+    assert ai.casts == 0 and ai.relic_acts == 0

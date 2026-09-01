@@ -303,7 +303,7 @@ lore enforcement in one greppable place.
 | CAST_HUNGER_PANG | `enemy_peak_cell` | normalized enemy density at cell | `cast_or_queue(HUNGER_PANG, ...)` |
 | CAST_LOWER | highest walk-blocking ridge cell adjacent to seam | terrain advantage estimate | `cast_or_queue(LOWER, ...)` |
 | CAST_BLESS | own densest cell | own-density shortfall vs enemy | `cast_or_queue(BLESS, ...)` (masked for Maw) |
-| RELIC_PLACE | seam push point (below) | free slots × seam opportunity | `relic_mgr.place` |
+| RELIC_PLACE | seam push point (below) | free slots × push-point spread — *amended, see below* | `relic_mgr.place` |
 | RELIC_MOVE | rear-most placed relic → push point | seam drift distance behind relic | `relic_mgr.move` |
 | RELIC_RETRIEVE | most-threatened placed relic | `threat_fraction`, ramping past `retrieve_panic` | `relic_mgr.retrieve` |
 | IDLE | — | `idle_floor` | none |
@@ -312,6 +312,25 @@ lore enforcement in one greppable place.
 spec.belief_cost` — the Steward hoards by raising `spend_floor`, the
 Zealot's floor is 0. (`spend_floor` is a *reserve*, not a discount;
 pillar 1 is untouched.)
+
+**Amendment 2026-09-02 (PR4 step 6) — RELIC_PLACE no longer keys off the
+seam.** Steps 4 and 5 measured a default 600 sim_s round and found the
+two belief fields never touch at all: zero cells carry both, so
+`seam_opportunity` is exactly 0 for the whole game. Scored that way the
+rival never places a relic, and step 8's acceptance bar ("places ≥ 2
+relics") is unreachable by construction. RELIC_PLACE is now
+`free_slots_fraction × spread`, where `spread` is how clear the push
+point is of the flags already planted (1.0 with none placed, falling to
+0 within `_RELIC_SPREAD_TILES`). The push point itself falls back to
+`own_centroid` as its anchor when the seam is empty. Relics therefore
+*make* contact rather than wait for it — a placed relic pulls its own
+faction's citizens through the attractor list, dragging the belief field
+forward with them.
+
+RELIC_MOVE gained a matching `_MOVE_DEADBAND_TILES` deadband in the same
+step: without one the rear-most relic is always *some* distance from the
+push point, and the AI burned half its decisions shuffling flags it had
+already planted (157 relic acts in 300 decisions, measured).
 
 **Relic push point.** `lerp(seam_peak_cell, enemy_centroid,
 relic_forward_bias)`, snapped to grid. Zealot bias 0.65 plants

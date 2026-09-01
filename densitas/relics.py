@@ -301,20 +301,10 @@ class RelicManager:
         `times_moved` is NOT incremented - placement isn't a move.
         `threat_timer` is reset to 0 (was already 0 from AVAILABLE).
         """
-        try:
-            r = self.get(faction, slot)
-        except IndexError as e:
-            return (False, str(e))
-
-        if r.state == RelicState.SHATTERED:
-            return (False, "relic shattered - slot exhausted for the round")
-        if r.state == RelicState.PLACED:
-            return (False, "slot already placed - use move")
-
-        ok, reason = self._validate_tile(faction, tx, ty, world,
-                                          ignore_relic_id=r.id)
+        ok, reason = self.can_place(faction, slot, tx, ty, world)
         if not ok:
             return (False, reason)
+        r = self.get(faction, slot)
 
         r.state = RelicState.PLACED
         r.tx = tx
@@ -339,20 +329,10 @@ class RelicManager:
         tile (no-op move) - validators only reject *other* relics'
         tiles.
         """
-        try:
-            r = self.get(faction, slot)
-        except IndexError as e:
-            return (False, str(e))
-
-        if r.state == RelicState.SHATTERED:
-            return (False, "relic shattered - slot exhausted for the round")
-        if r.state == RelicState.AVAILABLE:
-            return (False, "slot not placed - use place")
-
-        ok, reason = self._validate_tile(faction, tx, ty, world,
-                                          ignore_relic_id=r.id)
+        ok, reason = self.can_move(faction, slot, tx, ty, world)
         if not ok:
             return (False, reason)
+        r = self.get(faction, slot)
 
         r.tx = tx
         r.ty = ty
@@ -509,6 +489,44 @@ class RelicManager:
         return []
 
     # -- Internal helpers --------------------------------------------------
+
+    def can_place(self, faction: int, slot: int, tx: int, ty: int,
+                   world: World) -> tuple[bool, str]:
+        """Would `place(faction, slot, tx, ty, ...)` succeed? Dry run.
+
+        Public since PR4 step 6: the rival AI refines a target tile
+        inside a belief cell and has to ask before it commits (spec §8),
+        and there was no way to ask without mutating. `place` itself is
+        implemented on top of this, so the two cannot drift apart.
+        """
+        try:
+            r = self.get(faction, slot)
+        except IndexError as e:
+            return (False, str(e))
+        if r.state == RelicState.SHATTERED:
+            return (False, "relic shattered - slot exhausted for the round")
+        if r.state == RelicState.PLACED:
+            return (False, "slot already placed - use move")
+        return self._validate_tile(faction, tx, ty, world,
+                                    ignore_relic_id=r.id)
+
+    def can_move(self, faction: int, slot: int, tx: int, ty: int,
+                  world: World) -> tuple[bool, str]:
+        """Would `move(faction, slot, tx, ty, ...)` succeed? Dry run.
+
+        Same contract as `can_place`, but the slot must already be
+        PLACED. `move` is implemented on top of it.
+        """
+        try:
+            r = self.get(faction, slot)
+        except IndexError as e:
+            return (False, str(e))
+        if r.state == RelicState.SHATTERED:
+            return (False, "relic shattered - slot exhausted for the round")
+        if r.state == RelicState.AVAILABLE:
+            return (False, "slot not placed - use place")
+        return self._validate_tile(faction, tx, ty, world,
+                                    ignore_relic_id=r.id)
 
     def _validate_tile(self, faction: int, tx: int, ty: int,
                         world: World,
