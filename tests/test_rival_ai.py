@@ -1,7 +1,7 @@
-"""PR4 step 4 - rival AI skeleton tests (spec `Densitas_rival_ai.md` §12
-group D).
+"""PR4 steps 4-5 - rival AI tests (spec `Densitas_rival_ai.md` §12
+groups D and E).
 
-Eight tests, no display required:
+Group D - the skeleton. Eight tests, no display required:
   D1. cadence honours `period` - nothing early, exactly one on the beat
   D2. `difficulty` scales the cadence and nothing else
   D3. `period` floors at one logic tick however high difficulty goes
@@ -11,6 +11,15 @@ Eight tests, no display required:
       push-point anchor on an uncontested map
   D7. the decision ring caps at 64, dropping oldest first
   D8. the Maw never scores BLESS, even with `w_bless` forced to 1.0
+
+Plus D0, a labelled guard rail over the presets and factory that the
+eight above lean on.
+
+Group E - the same-rules property, 500 decision ticks of a contested map
+with a forced-aggressive brain and the casts live:
+  E1. every cast the AI reached for passed `can_cast` first
+  E2. the belief pool never goes negative, and was really spent
+  E3. the Maw never blesses under load, with an Open Eye control
 
 Run from the repo root:
     python -m pytest tests/test_rival_ai.py
@@ -138,10 +147,15 @@ class _Env:
         self.ps = PowerSystem(_power_cfg(), n_factions=2)
         self.sim_t = 0.0
 
-    def kwargs(self):
-        return dict(sim_t=self.sim_t, citizens=self.cm, belief=self.belief,
-                    relic_mgr=self.relics, power_system=self.ps,
-                    world=self.world)
+    def kwargs(self, *, food=True):
+        """`food=False` drops the food field, for the callers that only
+        want the scoring pass."""
+        kw = dict(sim_t=self.sim_t, citizens=self.cm, belief=self.belief,
+                  relic_mgr=self.relics, power_system=self.ps,
+                  world=self.world)
+        if food:
+            kw["food"] = self.food
+        return kw
 
     def advance(self, dt):
         """One logic tick of the parts the AI senses."""
@@ -445,3 +459,103 @@ def test_d0_presets_and_factory_are_well_formed():
 
     with pytest.raises(ValueError):
         make_rival_ai(_rival_cfg(personality="zelot"), _power_cfg())
+
+
+# -- E: the same-rules property (spec §12 group E) ----------------------------
+
+# All weights maxed, no reserve, no idle floor: whatever the board offers,
+# this brain reaches for it. The point is that maximum aggression still
+# cannot get around `can_cast`.
+_AGGRESSIVE = dataclasses.replace(
+    PERSONALITIES["zealot"], name="forced-aggressive",
+    w_curse=1.0, w_hunger_pang=1.0, w_lower=1.0, w_bless=1.0,
+    w_relic_place=1.0, w_relic_move=1.0, w_relic_retrieve=1.0,
+    spend_floor=0.0, idle_floor=0.0,
+)
+
+
+class _CastSpy:
+    """Wraps `cast_or_queue` and checks `can_cast` immediately before every
+    call - i.e. that the AI only ever reaches for a legal cast."""
+
+    def __init__(self, env, faction):
+        self.env = env
+        self.faction = faction
+        self.calls = []          # (kind, tx, ty, can_cast_ok, reason)
+        self._inner = env.ps.cast_or_queue
+        env.ps.cast_or_queue = self
+
+    def __call__(self, kind, faction, tx, ty, citizens, world, food, belief,
+                 sim_t, suppress_scripture=False):
+        ok, why = self.env.ps.can_cast(kind, faction, tx, ty, citizens, world)
+        self.calls.append((kind, tx, ty, ok, why))
+        return self._inner(kind, faction, tx, ty, citizens, world, food,
+                           belief, sim_t, suppress_scripture)
+
+
+def _property_run(personality=_AGGRESSIVE, faction=1, ticks=500, seed=11,
+                  start_pool=100.0):
+    """500 decision ticks of a contested map, casts live."""
+    dt = 0.2
+    env = _Env(initial_pop=12)
+    # Put the rival on top of the player cluster so the seam is real, and
+    # give both sides tier 2 so the costed powers are on the menu at all.
+    env.stuff(12, faction=1, at=(16, 12))
+    env.ps.pool[0] = start_pool
+    env.ps.pool[1] = start_pool
+    spy = _CastSpy(env, faction)
+    ai = RivalAI(faction, personality, _rival_cfg(difficulty=100.0),
+                 _power_cfg(), seed=seed)     # period floors to one tick
+
+    pool_min = min(env.ps.pool)
+    for _ in range(ticks):
+        env.advance(dt)
+        env.sim_t += dt
+        ai.tick(dt, **env.kwargs())
+        pool_min = min(pool_min, min(env.ps.pool))
+    return ai, env, spy, pool_min
+
+
+def test_e1_every_executed_cast_passed_can_cast():
+    ai, env, spy, _ = _property_run()
+
+    assert ai.decisions == 500
+    assert spy.calls, "the property run must actually cast something"
+    bad = [c for c in spy.calls if not c[3]]
+    assert not bad, f"reached for {len(bad)} illegal cast(s): {bad[:3]}"
+    assert ai.casts == len(spy.calls)
+    assert ai.refused == 0, "a scored-feasible cast was refused at the verb"
+
+    # Relic verbs are step 6: they can still win a decision, but nothing
+    # executes yet. This assertion is expected to flip when step 6 lands.
+    relic_intents = {Intent.RELIC_PLACE, Intent.RELIC_MOVE,
+                     Intent.RELIC_RETRIEVE}
+    assert all(not r.executed for r in ai.log if r.intent in relic_intents)
+
+
+def test_e2_pool_never_goes_negative():
+    ai, env, spy, pool_min = _property_run()
+
+    assert ai.casts > 0
+    assert pool_min >= 0.0, f"pool dipped to {pool_min}"
+    assert all(p >= 0.0 for p in env.ps.pool)
+
+    # And the spending was real, not a no-op that trivially never debits:
+    # the aggressive brain outspends its own regen at some point in the run.
+    assert pool_min < 100.0, "nothing was ever actually paid for"
+
+
+def test_e3_maw_never_blesses_under_load():
+    """The property-run twin of D8, which tests the same rule as a unit."""
+    ai, env, spy, _ = _property_run(faction=1)      # faction 1 == the Maw
+
+    assert ai.god_key == "maw"
+    assert ai.p.w_bless == 1.0, "the mask must be what stops it, not the weight"
+    assert PowerKind.BLESS not in {c[0] for c in spy.calls}
+    assert all(r.intent is not Intent.CAST_BLESS for r in ai.log)
+
+    # The control: the same brain as the Open Eye does bless, so the run is
+    # not simply one where BLESS was never affordable.
+    eye, _env, eye_spy, _ = _property_run(faction=0)
+    assert eye.god_key == "open_eye"
+    assert PowerKind.BLESS in {c[0] for c in eye_spy.calls}

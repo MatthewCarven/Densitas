@@ -159,8 +159,9 @@ Spec: **`Densitas_rival_ai.md`** (2026-06-07) — conversion + rival AI in one P
 - [x] ~~Step 2 — CONVERTED dispatch row + despair + flip + outline pulse + tests B~~ — built 2026-07-20, 223/223 pass. Lands via `commit_pr4_step2.cmd` (pre-flight HEAD `9fae165`).
 - [x] ~~Step 3 — `[rival]` block, default-on spawn, seed-relic removal + `--seed-relics`, stub-flag deprecation + tests C~~ — built 2026-07-20, 228/228 pass. Lands via `commit_pr4_step3.cmd` (pre-flight HEAD `2a2e723`).
 - [x] ~~Step 4 — `rival_ai.py` skeleton (personality dataclass, cadence, senses, scoring, decision ring, `--ai-debug`) + tests D~~ — built 2026-09-02, 237/237 pass. Committed directly (`.cmd` staging retired).
-- [ ] Step 5 — cast intents live (Curse/Hunger-Pang/Lower/Bless) + `GOD_FORBIDS` mask + tests E. *(Mask already landed in step 4; step 5 is filling in `RivalAI._execute` for the four cast intents. Start the first-light test from a grown rival — at spawn population 8 the rival is T0 and only Hunger Pang is legal.)*
-- [ ] Step 6 — relic intents (place/move/retrieve, push-point targeting) + tests F.
+- [x] ~~Step 5 — cast intents live (Curse/Hunger-Pang/Lower/Bless) + `GOD_FORBIDS` mask + tests E~~ — built 2026-09-02, 240/240 pass. Mask had already landed in step 4, so E3 is the property-run twin of D8.
+- [ ] **Maw scripture is placeholder and now on screen.** `rhetoric.json` has no `maw` block for `hunger_pang` or `lower`, so the log shows the literal `<hunger_pang>`. Latent before step 5; player-visible now that Hunger Pang is the rival's dominant action. Belongs to step 7's gap-fill (co-write session), but it is the first thing a playtester will notice.
+- [ ] Step 6 — relic intents (place/move/retrieve, push-point targeting) + tests F. *(Also fixes two step-4/5 findings: relic intents currently win decision ticks and do nothing, and RELIC_PLACE keying off the push point rather than `seam_overlap` is what makes the two civilisations meet at all.)*
 - [ ] Step 7 — scripture: conversion keys + coalescing + Maw gap-fill + tests G. *(Line co-write with Matthew — workshop session, see `densitas-scripture-voice` notes.)*
 - [ ] Step 8 — difficulty wiring + Zealot balance pass + acceptance run (600 sim_s ×3, seed 42) + WORKLOG/TODO/README sync.
 

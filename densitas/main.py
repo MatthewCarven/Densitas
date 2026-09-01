@@ -341,8 +341,8 @@ def main(argv: list[str] | None = None) -> int:
 
     # PR4 step 4 (spec §6) - the rival gets a brain. Built whenever the
     # round actually has rival citizens, so `--rival-stub-seed N` against
-    # `enabled = false` still gets the opponent it asked for. Step 4
-    # senses/scores/logs only; `_execute` stays a no-op until step 5.
+    # `enabled = false` still gets the opponent it asked for. Step 5 made
+    # its four cast intents live; the relic verbs land in step 6.
     rival_ai = None
     if n_rival > 0:
         rival_ai = make_rival_ai(
@@ -708,7 +708,7 @@ def main(argv: list[str] | None = None) -> int:
                 rival_ai.tick(
                     tick_dt, sim_t=sim_time, citizens=citizen_mgr,
                     belief=belief, relic_mgr=relic_mgr,
-                    power_system=power_system, world=world,
+                    power_system=power_system, world=world, food=food,
                 )
             sim_accumulator -= tick_dt
             sim_time += tick_dt

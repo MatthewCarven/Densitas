@@ -1396,3 +1396,70 @@ enemy at `relic_forward_bias` 0.65. Both factions survive (62 v 46).
 
 Committed directly (the /outputs + `.cmd` staging ritual is retired as of
 this session).
+
+---
+
+## 2026-09-02 — PR4 step 5: the Maw's hands (cast intents live)
+
+Spec: `Densitas_rival_ai.md` §8, §12-E, §13 step 5.
+
+- **`RivalAI._execute`** — the four cast intents go out through
+  `PowerSystem.cast_or_queue`, the player's own entry point. It
+  re-validates with `can_cast`, debits the pool, burns the cooldown and
+  emits scripture keyed by our god, so the same-rules pillar holds by
+  construction rather than by the AI promising to behave. Returns
+  `(executed, note)` now instead of a bare bool, so a verb that scored
+  feasible and was then refused shows up in `--ai-debug` rather than
+  vanishing. New `casts` / `refused` counters on the AI.
+- **`food` threaded through `tick` → `_decide` → `_execute`.** Not in
+  §6's signature, but `cast_or_queue` needs the field. Defaults to None
+  so a scoring-only caller still works; a cast without it is refused,
+  not crashed.
+- **`GOD_FORBIDS` was already live** from step 4, so the mask half of
+  this step was a no-op — §12-E's third test is the property-run twin of
+  step 4's unit test rather than new machinery.
+- `main.py` / README / test-file docstrings de-staled: step 4's "decides
+  but does not act" wording is now wrong.
+
+**Tests:** 240 / 240 headless (237 + 3), `SDL_VIDEODRIVER=dummy`,
+`--assert=plain`. Group E is one 500-decision-tick property run on a
+contested map with a forced-aggressive brain (every weight 1.0,
+`spend_floor` and `idle_floor` both 0) and a `_CastSpy` that calls
+`can_cast` immediately before every `cast_or_queue` the AI attempts:
+E1 every reached-for cast was legal (and `refused == 0`), E2 the pool
+never went negative *and* actually dipped below its starting value, so
+the run is not vacuously safe, E3 the Maw never blessed under load with
+an Open Eye control proving BLESS was affordable in that run.
+
+**Headless 600 sim_s default round:** 300 decisions, 145 casts, 0
+refused, pool never negative (min 0.02), no exceptions. IDLE now
+alternates with HUNGER_PANG because its 3.0 s cooldown outlasts the
+2.0 s decision period — the AI has nothing else affordable to reach for
+in an uncontested round.
+
+**Forced-contact 400 sim_s:** 121 casts across all four cast intents
+(96 pang, 24 curse, 1 lower), 76 RELIC_PLACE decisions still inert.
+
+**Live boot smoke** (`--ai-debug`, real game loop): first pang at
+t=7.8 then one every 4-6 sim_s, targets tracking the player cluster.
+
+**Three findings, flagged not fixed:**
+
+- **The Maw's scripture is placeholder text, and it is now on screen.**
+  `rhetoric.json` has no `maw` block for `hunger_pang` or `lower`, so
+  `pick("hunger_pang", "maw")` returns the literal string
+  `<hunger_pang>`. Before step 5 nothing cast those as the Maw and it
+  did not matter; now Hunger Pang is the rival's dominant action, so the
+  player's scripture log fills with `<hunger_pang>`. §12-G already lists
+  this as step 7's gap-fill — this just makes it urgent and
+  player-visible rather than latent. Left alone deliberately: the
+  rhetoric pool is a co-write with Matthew, not mine to fill in.
+- **Relic intents can win a tick and do nothing.** On a contested map
+  RELIC_PLACE took 76 of 200 decisions and burned each one, because §6
+  allows exactly one action per decision tick and the relic verbs are
+  step 6's. Not worth a temporary suppression — that would be dead code
+  the moment step 6 lands — but it does mean the Maw looks sluggish in a
+  contested playtest *at this commit specifically*.
+- **The uncontested-map seam problem from step 4 stands.** A default
+  round still never makes contact, so the rival's whole repertoire is
+  Hunger Pang. Unchanged by step 5; still step 6's to solve.

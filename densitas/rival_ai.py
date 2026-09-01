@@ -4,11 +4,12 @@ One decision every `ai_base_period / difficulty` sim seconds: sense the
 board, score every intent, act on the argmax if it beats `idle_floor`.
 Cadence is the *only* thing difficulty touches (pillar 2).
 
-**Step 4 executes nothing.** Every intent is sensed, scored, targeted and
-logged, but `_execute` is a documented no-op until step 5 (cast verbs)
-and step 6 (relic verbs). That cut line is deliberate: `--ai-debug` shows
-honest targets from this step onward, so the AI can be eyeballed before
-it is allowed to touch the world, and steps 5/6 become one-method diffs.
+**Step 5: the cast intents are live.** CURSE, HUNGER_PANG, LOWER and
+BLESS now go out through `PowerSystem.cast_or_queue` - the same entry
+point a player click uses, so the rival pays the same belief, burns the
+same cooldowns, obeys the same `can_cast`, and voices the same scripture
+path keyed by its own god. The three relic intents are still scored and
+targeted but not executed; they land in step 6.
 
 Dependency direction: only `main.py` imports this module, and this module
 imports only public APIs of the others (§6). Note `god_key_for` was
@@ -266,6 +267,8 @@ class RivalAI:
 
         self._accum = 0.0
         self.decisions = 0
+        self.casts = 0        # verbs that actually went out (step 5)
+        self.refused = 0      # scored feasible, then refused at the verb
         self.log: deque[DecisionRecord] = deque(maxlen=self.RING)
 
         # Belief-grid geometry, refreshed on each decision from the live
@@ -279,11 +282,16 @@ class RivalAI:
 
     def tick(self, dt: float, *, sim_t: float, citizens: CitizenManager,
              belief: BeliefField, relic_mgr: RelicManager,
-             power_system: PowerSystem,
-             world: World) -> Optional[DecisionRecord]:
+             power_system: PowerSystem, world: World,
+             food=None) -> Optional[DecisionRecord]:
         """Accumulate; run one sense -> score -> act pass every `period`.
 
         Returns the DecisionRecord if a decision ran this call, else None.
+
+        `food` is not in §6's signature but `PowerSystem.cast_or_queue`
+        requires it, so step 5 threads it through. It defaults to None so
+        a caller that only wants the scoring pass (the step-4 tests) still
+        works; a cast attempted without it is refused, not crashed.
         """
         self._accum += float(dt)
         period = max(self.period, float(dt))     # floor at one logic tick
@@ -298,7 +306,7 @@ class RivalAI:
 
         rec = self._decide(sim_t=sim_t, citizens=citizens, belief=belief,
                            relic_mgr=relic_mgr, power_system=power_system,
-                           world=world)
+                           world=world, food=food)
         self.log.append(rec)
         self.decisions += 1
         if self.debug:
@@ -641,7 +649,8 @@ class RivalAI:
 
     def _decide(self, *, sim_t: float, citizens: CitizenManager,
                 belief: BeliefField, relic_mgr: RelicManager,
-                power_system: PowerSystem, world: World) -> DecisionRecord:
+                power_system: PowerSystem, world: World,
+                food=None) -> DecisionRecord:
         s = self.sense(sim_t=sim_t, citizens=citizens, belief=belief,
                        relic_mgr=relic_mgr, power_system=power_system)
         u = self.utilities(s, power_system, citizens, world)
@@ -667,14 +676,13 @@ class RivalAI:
                 del remaining[intent]
                 note = "re-scored past unrefinable target"
                 continue
-            executed = self._execute(intent, target, s, sim_t=sim_t,
-                                     citizens=citizens, world=world,
-                                     belief=belief, relic_mgr=relic_mgr,
-                                     power_system=power_system)
+            executed, why = self._execute(
+                intent, target, s, sim_t=sim_t, citizens=citizens,
+                world=world, food=food, belief=belief,
+                relic_mgr=relic_mgr, power_system=power_system)
             return DecisionRecord(
                 sim_t=sim_t, intent=intent, target=target, score=best,
-                top3=top3, executed=executed,
-                note="" if executed else "no-op until step 5/6",
+                top3=top3, executed=executed, note=why,
             )
         else:
             note = "re-score bound reached"
@@ -686,15 +694,39 @@ class RivalAI:
     def _execute(self, intent: Intent, target: tuple[int, int], s: Senses, *,
                  sim_t: float, citizens: CitizenManager, world: World,
                  belief: BeliefField, relic_mgr: RelicManager,
-                 power_system: PowerSystem) -> bool:
-        """Perform the chosen intent. **No-op in step 4, by design.**
+                 power_system: PowerSystem,
+                 food=None) -> tuple[bool, str]:
+        """Perform the chosen intent. Returns `(executed, note)`.
 
-        Step 5 fills in the four cast intents via `cast_or_queue`; step 6
-        fills in the three relic intents via the RelicManager API. Both
-        land as additions to this one method - everything above already
-        hands it a scored intent and a legal tile.
+        Step 5: the four cast intents go out through `cast_or_queue` -
+        the player's own entry point. It re-validates with `can_cast`,
+        debits the pool, burns the cooldown and emits the scripture line
+        for our god, so the same-rules pillar holds by construction
+        rather than by our promising to behave. Step 6 fills in the three
+        relic verbs below the same way.
         """
-        return False
+        if intent in INTENT_POWER:
+            kind = INTENT_POWER[intent]
+            if food is None:
+                # No food field to hand the dispatch - refuse rather than
+                # crash. Only reachable from a caller that omitted it.
+                return False, "no food field; cast skipped"
+            tx, ty = target
+            receipt = power_system.cast_or_queue(
+                kind, self.faction, int(tx), int(ty),
+                citizens, world, food, belief, sim_t,
+            )
+            if receipt.ok:
+                self.casts += 1
+                return True, ("queued" if receipt.reason == "queued" else "")
+            # Scored feasible, then refused at the verb. Should not happen
+            # - surface it in the log instead of swallowing it.
+            self.refused += 1
+            return False, f"refused: {receipt.reason}"
+
+        # RELIC_PLACE / MOVE / RETRIEVE - scored and targeted, not yet
+        # executed. Step 6.
+        return False, "no-op until step 6"
 
 
 # -- helpers -----------------------------------------------------------------
