@@ -1797,3 +1797,78 @@ the spread gate, and gives `relic_forward_bias` a meaning that survives
 the seam moving. Alternatives: closer `spawn_frac_x`, or a wander radius
 that grows with population. Held rather than built, per the working
 agreement - three findings deep is where acting becomes redesigning.
+
+---
+
+## 2026-09-11 — PR4 step 8b: the chain of flags
+
+Matthew's calls on the step-8 findings: build the chain; leave amplitude
+at 20 (his to tune later); leave `drain_rate` alone until a human is on
+the other side.
+
+**Built: `RivalAI.push_reach`.** The push point is no longer
+`lerp(seam, enemy_centroid, bias)`. Each new flag goes
+`relic_forward_bias × relic_step_tiles` ahead of the *front-most* flag
+already planted (own centroid when there is none), straight at the enemy
+centroid, and never closer than `relic_standoff_tiles` to that centroid
+or to any enemy relic - the latter as a ray-circle entry, so a relic
+beside the ray never shortens the reach. RELIC_MOVE aims at the same
+point, so the rear flag leapfrogs to the front and the column advances
+until the line is reached, then holds. Both distances are `[rival]`
+knobs (32 and 12). `Senses` gains `enemy_placed`, which §7 always listed.
+
+Three things the first run taught, each fixed the same afternoon:
+
+1. **The ray is fixed, so a lake across it is permanent.** Reach 20.8,
+   push point None, for the whole round - seed 42 has water at x≈158-176
+   between the two spawns. The fallback list now fans two cells either
+   side of the ray at every fallback fraction (25 candidates, forward
+   and centre first). "Plant as far forward as the ground allows, and
+   step around the lake."
+2. **The standoff and the spread gate fought at the line.** A player
+   relic on the ray capped the reach at 10; the spread gate (16) then
+   refused to plant that close to the front flag. The gate now exempts
+   the flag being stepped *from* - the chain puts the new one `reach`
+   ahead of it by construction - and `push_reach` refuses a reach
+   shorter than the move deadband as not worth a flag.
+3. **That floor stopped the Steward planting anything** (bias 0.15 ×
+   32 = 4.8 < 8). The first flag is exempt: with nothing down, any
+   positive reach is worth it, and one flag at home is the Steward's
+   whole character.
+
+**Tests:** 257 / 257 + 1 skipped. D6, F1, F4, F6, F7, F8 rewritten for
+the chain; the property runs and F-group placement tests use a
+`_SMALL_MAP` config, since the 32×24 test world is an eighth of the real
+one and the chain's distances are world-scale. F1 covers: anchor on own
+centroid then on the front flag, bias 0 holds, bias 1 takes a full step,
+the standoff caps against the centroid, holds at the line, and shortens
+against an on-ray enemy relic but not an off-ray one.
+
+**Result, every seed and mode:** flags forward, at the line, **zero
+shattered** (from three of three, every passive run, before). Live boot:
+two flags in four seconds, then a leapfrog. Temple suicide is gone.
+
+**Acceptance now:** places ≥ 2 PASS (2-3 every run), casts ≥ 10 PASS,
+pool PASS; converts ≥ 5 and relic-threat still FAIL. One versus
+iteration mid-afternoon gave 34 / 19 / 4 conversions and a genuinely
+contested seed-1 game (130 v 178, three flags, two shattered) - then the
+Steward planting its one flag changed the Maw's geometry and the same
+seeds gave 0 / 1 / 4. Chaotic sensitivity, as flagged in step 8.
+
+**New finding - low-population demographic collapse.** In versus and in
+a Zealot-v-Zealot mirror match, the Maw at the 0.75 spawn peaks at 11-17
+citizens and goes extinct at ~500 s. Not starvation (nobody hungry), not
+conversion (0), not despair: deaths of *age with no births*, faith 1.0
+throughout. Two attractor discs 20 tiles apart with nine citizens
+between them puts nobody within `repro_radius` 2 of a mate. The GDD's
+Zealot "neglects density" - at population nine that neglect is fatal.
+The centre faction, on better land with the Open Eye's 240 casts
+landing elsewhere, grows to 100-160 in the same runs. Proposed fix, not
+built: scale `attract_probability` by population - a village of ten
+doesn't send pilgrims. Held here: it is a citizen-side rule from the
+relic spec, and this entry is the fourth iteration of the day.
+
+The relic-threat criterion is structurally out of reach while amplitude
+is 20 and the standoff is 12: the Maw halts 12 tiles from the player's
+relics by design, and its bled belief never approaches 1.5 × 20.
+Resolves with the amplitude decision, not with targeting.

@@ -96,6 +96,13 @@ class RivalConfig:
     relic_spread_tiles:  float = 16.0  # a new flag must be this clear of the planted ones
     move_deadband_tiles: float = 8.0   # a flag drifts this far before RELIC_MOVE touches it
     drift_ref_tiles:     float = 32.0  # drift at which RELIC_MOVE's utility saturates
+    # PR4 step 8b: the relic chain. A new flag goes `relic_forward_bias x
+    # relic_step_tiles` ahead of the front-most one already planted, and
+    # never closer than `relic_standoff_tiles` to the enemy centroid or
+    # to any enemy relic. Replaces step 6's lerp toward the enemy
+    # centroid, which marched the flags into the enemy's temple.
+    relic_step_tiles:    float = 32.0  # full step at forward_bias 1.0
+    relic_standoff_tiles: float = 12.0 # the line the chain stops at
 
 
 PERSONALITIES: tuple[str, ...] = ("zealot", "steward", "trickster")

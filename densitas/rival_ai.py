@@ -11,6 +11,11 @@ click uses, so the rival pays the same belief, burns the same cooldowns,
 obeys the same `can_cast` / `can_place`, and voices the same scripture
 path keyed by its own god.
 
+**Step 8b: relics chain.** The push point is no longer a lerp toward the
+enemy centroid; each flag steps forward from the front-most one and stops
+at a standoff line short of the enemy's people and relics. See
+`RivalAI.push_reach` for why.
+
 Dependency direction: only `main.py` imports this module, and this module
 imports only public APIs of the others (§6). Note `god_key_for` was
 promoted out of `powers.py`'s private namespace for exactly that reason.
@@ -61,11 +66,23 @@ _DRIFT_REF_TILES = 32.0
 # intent scores zero; above it the ramp runs to `_DRIFT_REF_TILES`.
 _MOVE_DEADBAND_TILES = 8.0
 
-# Fractions of `relic_forward_bias` sampled when the push point itself is
+# Fractions of the chain's reach sampled when the push point itself is
 # unplaceable, most-forward first. Bounded and small on purpose: §8 wants
 # no scanning loops, and this is "plant as far forward as the ground
 # allows", not a search.
 _PUSH_FALLBACK_FRACTIONS = (1.0, 0.8, 0.6, 0.4, 0.2)
+
+# Lateral offsets, in belief cells, fanned across the chain's ray at each
+# fallback fraction - centre first. The chain's ray is fixed (front flag
+# to enemy centroid), so a lake across it is permanent; measured on seed
+# 42: reach 20.8, push point None, for the whole round. Five fractions x
+# five offsets is 25 candidate cells, bounded, still not a scan.
+_PUSH_LATERAL_CELLS = (0, 1, -1, 2, -2)
+
+# Step 8b chain defaults; `[rival] relic_step_tiles` / `relic_standoff_tiles`
+# override them. See `RivalAI.push_reach`.
+_RELIC_STEP_TILES = 32.0
+_RELIC_STANDOFF_TILES = 12.0
 
 # Distance (world tiles) at which a new relic counts as fully clear of the
 # ones already planted. Below it, RELIC_PLACE's utility falls off, so the
@@ -138,7 +155,7 @@ class AIPersonality:
     spend_floor:        float  # pool reserve held back from costed casts
     idle_floor:         float  # best score must beat this to act
     retrieve_panic:     float  # threat_fraction where retrieve starts ramping
-    relic_forward_bias: float  # 0 = place at home, 1 = at the enemy's throat
+    relic_forward_bias: float  # fraction of relic_step_tiles each flag advances
     jitter:             float  # uniform tie-break noise on scores
 
     def weight(self, intent: Intent) -> float:
@@ -219,6 +236,7 @@ class Senses:
     own_centroid:    Optional[tuple[float, float]]    # world tiles
     enemy_centroid:  Optional[tuple[float, float]]
     own_placed:      tuple[Relic, ...]
+    enemy_placed:    tuple[Relic, ...]
     own_free_slots:  tuple[int, ...]
     n_slots:         int
     max_threat_frac: float
@@ -293,6 +311,10 @@ class RivalAI:
             rival_cfg, "move_deadband_tiles", _MOVE_DEADBAND_TILES))
         self.drift_ref = float(getattr(
             rival_cfg, "drift_ref_tiles", _DRIFT_REF_TILES))
+        self.step_tiles = float(getattr(
+            rival_cfg, "relic_step_tiles", _RELIC_STEP_TILES))
+        self.standoff_tiles = float(getattr(
+            rival_cfg, "relic_standoff_tiles", _RELIC_STANDOFF_TILES))
 
         # §6 cadence. `difficulty` scales it and nothing else. The
         # one-logic-tick floor is applied per call, in `tick`, because the
@@ -397,6 +419,7 @@ class RivalAI:
             own_centroid=centroid(citizens, self.faction),
             enemy_centroid=centroid(citizens, self.enemy),
             own_placed=placed,
+            enemy_placed=tuple(relic_mgr.placed_for_faction(self.enemy)),
             own_free_slots=free,
             n_slots=len(own_slots),
             max_threat_frac=max(threats) if threats else 0.0,
@@ -492,7 +515,10 @@ class RivalAI:
             if push is not None:
                 drift = dist((rear.tx, rear.ty), push)
                 span = max(_EPS, self.drift_ref - self.move_deadband)
-                if drift > self.move_deadband:
+                # The spread gate applies here too: a short reach near
+                # the standoff line would otherwise leapfrog the rear
+                # flag onto the front one.
+                if drift > self.move_deadband and self.spread(s, push) > 0.0:
                     u[Intent.RELIC_MOVE] = clamp01(
                         (drift - self.move_deadband) / span)
 
@@ -534,61 +560,118 @@ class RivalAI:
 
     # -- targeting (§8) ------------------------------------------------------
 
-    def push_point_cell(self, s: Senses) -> Optional[tuple[int, int]]:
-        """The push point at this personality's full forward bias."""
-        return self.push_cell_at(s, clamp01(self.p.relic_forward_bias))
+    def front_most(self, s: Senses) -> Optional[Relic]:
+        """The placed relic nearest the enemy centroid: the head of the
+        chain, and the anchor the next flag steps forward from."""
+        if not s.own_placed or s.enemy_centroid is None:
+            return None
+        ex, ey = s.enemy_centroid
+        return min(s.own_placed, key=lambda r: dist((r.tx, r.ty), (ex, ey)))
+
+    def push_reach(self, s: Senses) -> Optional[
+            tuple[tuple[float, float], tuple[float, float], float]]:
+        """`(anchor, unit_dir, reach)` for the next flag, in world tiles,
+        or None when there is nowhere to push.
+
+        The chain of flags (step 8b, replacing step 6's lerp). Each new
+        relic goes `relic_forward_bias x relic_step_tiles` ahead of the
+        *front-most* one already planted - our own centroid when there is
+        none - straight at the enemy centroid, and never closer than
+        `relic_standoff_tiles` to that centroid or to any enemy relic. A
+        Zealot therefore walks its flags forward one step at a time and
+        halts at the standoff line: inside the enemy's sprawl, contested,
+        shatter-prone, which is the character §9.1 asks for. The lerp
+        toward the enemy centroid put them *in the temple* instead - all
+        three dead within 32 s at the player's spawn tile, measured.
+
+        `reach` is how far along `unit_dir` the flag may go: the step,
+        capped by the standoff against the centroid (a point on the ray)
+        and every enemy relic (a circle the ray may not enter). Zero
+        reach means the front is already at the line: hold. RELIC_MOVE
+        uses the same point, so the rear flag leapfrogs to the front and
+        the column advances until the line is reached, then stops.
+        """
+        if s.enemy_centroid is None:
+            return None
+        front = self.front_most(s)
+        anchor = ((float(front.tx), float(front.ty)) if front is not None
+                  else s.own_centroid)
+        if anchor is None:
+            return None
+        ex, ey = s.enemy_centroid
+        dx, dy = ex - anchor[0], ey - anchor[1]
+        length = float(np.hypot(dx, dy))
+        if length <= _EPS:
+            return None
+        u = (dx / length, dy / length)
+        standoff = max(0.0, self.standoff_tiles)
+        reach = min(self.step_tiles * clamp01(self.p.relic_forward_bias),
+                    length - standoff)
+        for r in s.enemy_placed:
+            # Ray-circle entry: how far along `u` before the ray comes
+            # within `standoff` of this relic. A relic beside or behind
+            # the anchor never shortens the reach.
+            px, py = r.tx - anchor[0], r.ty - anchor[1]
+            t = px * u[0] + py * u[1]
+            h2 = px * px + py * py - t * t
+            if h2 >= standoff * standoff:
+                continue
+            entry = t - float(np.sqrt(max(0.0, standoff * standoff - h2)))
+            reach = min(reach, entry)
+        # Advancing by less than the move deadband is not worth a flag:
+        # the front is effectively at the line, hold. (Same rule that
+        # stops a two-tile relic move paying a full fade-in.) The FIRST
+        # flag is exempt - with nothing planted, any positive reach is
+        # worth it, and a Steward's 4.8-tile step is its whole character.
+        floor = self.move_deadband if front is not None else _EPS
+        if reach < max(_EPS, floor):
+            return None
+        return anchor, u, reach
 
     def push_point_cells(self, s: Senses) -> list[tuple[int, int]]:
-        """The push point plus fallbacks walking back toward home.
+        """The push point plus fallbacks walking back toward the anchor.
 
         §8 refines inside one cell and re-scores if nothing in it is
         legal, which stalls hard when the push point lands on water: the
         anchor barely moves between decisions, so RELIC_PLACE stays the
         top-scoring intent and fails refinement every single tick.
-        Observed live at 0.91 and unplaceable for a solid minute of play.
-
-        Sampling the same lerp at decreasing bias reads as "plant as far
-        forward as the ground allows" and stays bounded at five tries -
-        a fallback list, not a scan.
+        Sampling the reach at decreasing fractions reads as "plant as far
+        forward as the ground allows"; fanning each sample a couple of
+        cells to either side of the ray reads as "and step around the
+        lake". Twenty-five candidates at most - a fallback list, not a
+        scan. Order is forward-first, centre-first, so the primary push
+        point is still `cells[0]`.
         """
-        t0 = clamp01(self.p.relic_forward_bias)
+        pr = self.push_reach(s)
+        if pr is None:
+            return []
+        anchor, u, reach = pr
+        perp = (-u[1], u[0])
+        lateral = float(max(1, self._tpc_x))       # one cell, in tiles
         out: list[tuple[int, int]] = []
         for frac in _PUSH_FALLBACK_FRACTIONS:
-            cell = self.push_cell_at(s, t0 * frac)
-            if cell is not None and cell not in out:
-                out.append(cell)
+            d = reach * frac
+            fx = anchor[0] + u[0] * d
+            fy = anchor[1] + u[1] * d
+            for k in _PUSH_LATERAL_CELLS:
+                off = k * lateral
+                cell = self.tile_to_cell(fx + perp[0] * off,
+                                         fy + perp[1] * off)
+                if cell not in out:
+                    out.append(cell)
         return out
 
-    def push_cell_at(self, s: Senses,
-                     t: float) -> Optional[tuple[int, int]]:
-        """`lerp(seam_peak_cell, enemy_centroid, t)`, snapped.
+    def push_point_cell(self, s: Senses) -> Optional[tuple[int, int]]:
+        """The primary push cell (full reach), or None."""
+        cells = self.push_point_cells(s)
+        return cells[0] if cells else None
 
-        Degenerate board: before the two fields touch, `seam` is zero
-        everywhere and its argmax is cell (0, 0) by tie-break - a map
-        corner, not an anchor. Fall back to our own centroid then, which
-        reads the lerp as "push from where we are toward them" and keeps
-        RELIC_MOVE's utility honest on an uncontested map. Once any seam
-        exists this branch never runs.
-        """
-        if s.seam_peak_value > _EPS or s.own_centroid is None:
-            cx, cy = s.seam_peak_cell
-        else:
-            ox, oy = s.own_centroid
-            cx = int(ox / max(1, self._tpc_x))
-            cy = int(oy / max(1, self._tpc_y))
-        if s.enemy_centroid is None:
-            return (max(0, min(max(0, self._grid_w - 1), cx)),
-                    max(0, min(max(0, self._grid_h - 1), cy)))
-        ex, ey = s.enemy_centroid
-        # The centroid arrives in world tiles; the lerp happens in cells.
-        ecx = ex / max(1, self._tpc_x)
-        ecy = ey / max(1, self._tpc_y)
-        t = clamp01(t)
-        gx = int(round(cx + (ecx - cx) * t))
-        gy = int(round(cy + (ecy - cy) * t))
-        gx = max(0, min(max(0, self._grid_w - 1), gx))
-        gy = max(0, min(max(0, self._grid_h - 1), gy))
-        return (gx, gy)
+    def tile_to_cell(self, x: float, y: float) -> tuple[int, int]:
+        """World tile (float ok) -> belief cell, clamped to the grid."""
+        cx = int(x // max(1, self._tpc_x))
+        cy = int(y // max(1, self._tpc_y))
+        return (max(0, min(max(0, self._grid_w - 1), cx)),
+                max(0, min(max(0, self._grid_h - 1), cy)))
 
     def push_point_tile(self, s: Senses,
                         world: Optional[World] = None
@@ -633,9 +716,16 @@ class RivalAI:
         attractor disc until the local food gave out. A gate, like
         RELIC_MOVE's deadband, is what the term was always meant to be.
         """
-        if not s.own_placed:
+        # The flag being stepped *from* is exempt: the chain puts the new
+        # one `reach` ahead of it by construction, and `push_reach` has
+        # already refused a reach too short to be worth a flag. What the
+        # gate protects against is the lateral fan or a short reach
+        # landing the new flag on some *other* flag in the chain.
+        front = self.front_most(s)
+        others = [r for r in s.own_placed if r is not front]
+        if not others:
             return 1.0
-        nearest = min(dist((r.tx, r.ty), push) for r in s.own_placed)
+        nearest = min(dist((r.tx, r.ty), push) for r in others)
         if nearest < self.spread_tiles:
             return 0.0
         return clamp01((nearest - self.spread_tiles)

@@ -66,6 +66,8 @@ relic_scripture    = true        # voice the Maw's relic verbs in the scripture 
 relic_spread_tiles  = 16.0       # a new flag must be this clear of the planted ones
 move_deadband_tiles = 8.0        # a flag drifts this far before RELIC_MOVE touches it
 drift_ref_tiles     = 32.0       # drift at which RELIC_MOVE's utility saturates
+relic_step_tiles    = 32.0       # a new flag goes forward_bias x this ahead of the front one
+relic_standoff_tiles = 12.0      # ...and never closer than this to the enemy's people or relics
 
 [belief]
 grid_w            = 64

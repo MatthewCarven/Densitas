@@ -180,6 +180,14 @@ def _rival_cfg(**kw):
     return dataclasses.replace(RivalConfig(), **kw)
 
 
+# The 32x24 test world is an eighth of the real map, so the chain's
+# world-scale distances (spec'd for 256x192) shrink with it. Any test that
+# expects the rival to actually plant a flag here uses this.
+_SMALL_MAP = dict(relic_step_tiles=10.0, relic_standoff_tiles=3.0,
+                  relic_spread_tiles=4.0, move_deadband_tiles=2.0,
+                  drift_ref_tiles=8.0)
+
+
 def _ai(*, personality="zealot", faction=1, seed=0, **cfg_kw):
     return make_rival_ai(_rival_cfg(personality=personality, **cfg_kw),
                          _power_cfg(), faction=faction, seed=seed)
@@ -335,19 +343,18 @@ def test_d6_senses_centroids():
     assert s.own_centroid == pytest.approx((4.0, 6.0))
     assert s.pop_own == 2 and s.pop_enemy == 4
 
-    # With no seam (these two clusters do not overlap at all), the relic
-    # push point must anchor on our own centroid rather than on the seam
-    # argmax's (0, 0) tie-break, which is a map corner and not an anchor.
+    # With no flags planted, the chain anchors on our own centroid and
+    # steps straight at theirs - never on the seam argmax's (0, 0)
+    # tie-break, which is a map corner and not an anchor.
     assert s.seam_peak_value == 0.0
-    push = ai.push_point_cell(s)
-    own_cell = (int(4.0 / env.belief.tiles_per_cell_x),
-                int(6.0 / env.belief.tiles_per_cell_y))
-    enemy_cell = (15.0 / env.belief.tiles_per_cell_x,
-                  15.0 / env.belief.tiles_per_cell_y)
-    t = ai.p.relic_forward_bias
-    assert push == (round(own_cell[0] + (enemy_cell[0] - own_cell[0]) * t),
-                    round(own_cell[1] + (enemy_cell[1] - own_cell[1]) * t))
-    assert push != (0, 0)
+    small = RivalAI(1, ai.p, _rival_cfg(**_SMALL_MAP), _power_cfg(), seed=0)
+    _sense_only(small, env)
+    anchor, u, reach = small.push_reach(s)
+    assert anchor == pytest.approx((4.0, 6.0))
+    assert u == pytest.approx((11.0 / dist((4, 6), (15, 15)),
+                               9.0 / dist((4, 6), (15, 15))))
+    assert 0.0 < reach <= small.step_tiles * small.p.relic_forward_bias
+    assert small.push_point_cell(s) != (0, 0)
 
     # An extinct faction has no centroid at all - callers must not get a
     # (0, 0) that reads as "the top-left corner".
@@ -501,13 +508,15 @@ def _property_run(personality=_AGGRESSIVE, faction=1, ticks=500, seed=11,
     """500 decision ticks of a contested map, casts live."""
     dt = 0.2
     env = _Env(initial_pop=12)
-    # Put the rival on top of the player cluster so the seam is real, and
-    # give both sides tier 2 so the costed powers are on the menu at all.
-    env.stuff(12, faction=1, at=(16, 12))
+    # Put the rival beside the player cluster so the seam is real and the
+    # chain has a direction to push, and give both sides tier 2 so the
+    # costed powers are on the menu at all.
+    env.stuff(12, faction=1, at=(24, 14))
     env.ps.pool[0] = start_pool
     env.ps.pool[1] = start_pool
     spy = _CastSpy(env, faction)
-    ai = RivalAI(faction, personality, _rival_cfg(difficulty=100.0),
+    ai = RivalAI(faction, personality,
+                 _rival_cfg(difficulty=100.0, **_SMALL_MAP),
                  _power_cfg(), seed=seed)     # period floors to one tick
 
     pool_min = min(env.ps.pool)
@@ -572,42 +581,66 @@ def _sense_only(ai, env):
                     relic_mgr=env.relics, power_system=env.ps)
 
 
-def test_f1_push_point_lerps_and_snaps():
+def test_f1_chain_steps_from_the_front_flag_and_stops_at_the_standoff():
+    """Step 8b replaced the lerp: `push_reach` is anchor + unit x reach."""
     env = _Env()
-    ai = _ai()                                  # zealot, forward bias 0.65
-    tpc_x, tpc_y = env.belief.tiles_per_cell_x, env.belief.tiles_per_cell_y
-
-    # A real seam at cell (4, 4), and an enemy centroid at cell (12, 8).
-    env.belief.field[:] = 0.0
-    env.belief.field[1, 4, 4] = 3.0
-    env.belief.field[0, 4, 4] = 3.0             # product peaks here
+    ai = RivalAI(1, PERSONALITIES["zealot"], _rival_cfg(**_SMALL_MAP),
+                 _power_cfg(), seed=0)
     env.cm.citizens.clear()
     for _ in range(4):
-        env.cm.citizens.append(env.cm._make_citizen(
-            faction=0, x=12.0 * tpc_x, y=8.0 * tpc_y, age=10.0))
-    env.cm.citizens.append(env.cm._make_citizen(
-        faction=1, x=4.0 * tpc_x, y=4.0 * tpc_y, age=10.0))
-
+        env.cm.citizens.append(env.cm._make_citizen(faction=0, x=2.0, y=12.0,
+                                                    age=10.0))
+    for _ in range(4):
+        env.cm.citizens.append(env.cm._make_citizen(faction=1, x=30.0, y=12.0,
+                                                    age=10.0))
     s = _sense_only(ai, env)
-    assert s.seam_peak_cell == (4, 4)
+    assert s.own_centroid == pytest.approx((30.0, 12.0))
+    assert s.enemy_centroid == pytest.approx((2.0, 12.0))
 
-    t = ai.p.relic_forward_bias
-    assert ai.push_point_cell(s) == (round(4 + (12 - 4) * t),
-                                     round(4 + (8 - 4) * t))
-    # Snapped to a cell, then to that cell's block centre in world tiles.
-    cx, cy = ai.push_point_cell(s)
-    assert ai.push_point_tile(s) == (cx * tpc_x + tpc_x // 2,
-                                     cy * tpc_y + tpc_y // 2)
+    # No flags: anchor is our centroid, direction is straight at theirs,
+    # reach is bias x step (6.5), nowhere near the 28-tile gap.
+    anchor, u, reach = ai.push_reach(s)
+    assert anchor == pytest.approx((30.0, 12.0))
+    assert u == pytest.approx((-1.0, 0.0))
+    assert reach == pytest.approx(10.0 * 0.65)
+    assert ai.push_point_tile(s) is not None
 
-    # Bias 0 stays on the seam; bias 1 lands on the enemy centroid.
-    home = RivalAI(1, dataclasses.replace(PERSONALITIES["zealot"],
-                                          relic_forward_bias=0.0),
-                   _rival_cfg(), _power_cfg(), seed=0)
-    throat = RivalAI(1, dataclasses.replace(PERSONALITIES["zealot"],
-                                            relic_forward_bias=1.0),
-                     _rival_cfg(), _power_cfg(), seed=0)
-    assert home.push_point_cell(_sense_only(home, env)) == (4, 4)
-    assert throat.push_point_cell(_sense_only(throat, env)) == (12, 8)
+    # Bias 0 never advances; bias 1 takes a full step.
+    home = RivalAI(1, dataclasses.replace(ai.p, relic_forward_bias=0.0),
+                   _rival_cfg(**_SMALL_MAP), _power_cfg(), seed=0)
+    assert home.push_reach(_sense_only(home, env)) is None
+    full = RivalAI(1, dataclasses.replace(ai.p, relic_forward_bias=1.0),
+                   _rival_cfg(**_SMALL_MAP), _power_cfg(), seed=0)
+    assert full.push_reach(_sense_only(full, env))[2] == pytest.approx(10.0)
+
+    # A planted flag becomes the anchor - the chain steps from the FRONT
+    # one, not from home.
+    assert env.relics.place(1, 0, 20, 12, env.world, 0.0)[0]
+    s = _sense_only(ai, env)
+    assert ai.front_most(s).slot == 0
+    anchor, u, reach = ai.push_reach(s)
+    assert anchor == pytest.approx((20.0, 12.0))
+    assert reach == pytest.approx(6.5)
+
+    # The standoff caps the reach against the enemy centroid: a front flag
+    # 5 tiles from them may advance only 2 more (standoff 3)...
+    assert env.relics.place(1, 1, 7, 12, env.world, 0.0)[0]
+    s = _sense_only(ai, env)
+    assert ai.front_most(s).slot == 1
+    assert ai.push_reach(s)[2] == pytest.approx(5.0 - 3.0)
+    # ...and at the line, the chain holds: no push point at all.
+    assert env.relics.move(1, 1, 5, 12, env.world, 1.0)[0]
+    assert ai.push_reach(_sense_only(ai, env)) is None
+
+    # An enemy relic on the ray shortens the reach to the edge of its
+    # standoff circle; one off to the side does not.
+    assert env.relics.retrieve(1, 1, 2.0)[0]               # front back to slot 0 at x=20
+    assert env.relics.place(0, 0, 14, 12, env.world, 0.0)[0]   # dead ahead, 6 away
+    s = _sense_only(ai, env)
+    assert ai.push_reach(s)[2] == pytest.approx(6.0 - 3.0)
+    assert env.relics.move(0, 0, 14, 20, env.world, 1.0)[0]    # 8 tiles off the ray
+    s = _sense_only(ai, env)
+    assert ai.push_reach(s)[2] == pytest.approx(6.5)
 
 
 def test_f2_place_consumes_a_slot_through_the_real_api():
@@ -657,24 +690,30 @@ def test_f3_retrieve_only_fires_past_retrieve_panic():
 
 def test_f4_move_targets_the_rear_most_relic():
     env = _Env()
-    ai = _ai()
+    ai = RivalAI(1, PERSONALITIES["zealot"], _rival_cfg(**_SMALL_MAP),
+                 _power_cfg(), seed=0)
     env.cm.citizens.clear()
     for _ in range(4):
-        env.cm.citizens.append(env.cm._make_citizen(faction=0, x=6.0, y=6.0,
+        env.cm.citizens.append(env.cm._make_citizen(faction=0, x=2.0, y=2.0,
                                                     age=10.0))
     for _ in range(4):
-        env.cm.citizens.append(env.cm._make_citizen(faction=1, x=26.0, y=18.0,
+        env.cm.citizens.append(env.cm._make_citizen(faction=1, x=28.0, y=20.0,
                                                     age=10.0))
 
-    # Slot 0 near the enemy, slot 1 far behind it. Rear-most is slot 1.
-    assert env.relics.place(1, 0, 10, 9, env.world, 0.0)[0]
-    assert env.relics.place(1, 1, 30, 22, env.world, 0.0)[0]
+    # Slot 0 out front, slot 1 back home. The chain steps from slot 0; the
+    # rear-most is slot 1, and moving it there is the leapfrog.
+    assert env.relics.place(1, 0, 20, 14, env.world, 0.0)[0]
+    assert env.relics.place(1, 1, 28, 20, env.world, 0.0)[0]
 
     s = _sense_only(ai, env)
+    assert ai.front_most(s).slot == 0
     push = ai.push_point_tile(s)
+    assert push is not None
     rear = ai.rear_most(s)
     assert rear is not None and rear.slot == 1
-    assert dist((rear.tx, rear.ty), push) > dist((10, 9), push)
+    assert dist((rear.tx, rear.ty), push) > dist((20, 14), push)
+    # The leapfrog lands ahead of the old front, toward the enemy.
+    assert dist(push, (2, 2)) < dist((20, 14), (2, 2))
 
     # And the verb moves that slot, not the forward one.
     before = (env.relics.get(1, 0).tx, env.relics.get(1, 0).ty)
@@ -724,12 +763,13 @@ def test_f5_refinement_never_yields_an_unwalkable_tile():
 
 def test_f6_two_rescore_bound_holds():
     env = _Env(initial_pop=12)
-    env.stuff(12, faction=1, at=(16, 12))
+    env.stuff(12, faction=1, at=(24, 14))
     env.ps.pool[1] = 200.0
     env.advance(0.2)
     env.sim_t += 0.2
 
-    ai = RivalAI(1, _AGGRESSIVE, _rival_cfg(), _power_cfg(), seed=5)
+    ai = RivalAI(1, _AGGRESSIVE, _rival_cfg(**_SMALL_MAP), _power_cfg(),
+                 seed=5)
 
     # Every target is unrefinable, so each pick is dropped and re-scored.
     tried = []
@@ -771,7 +811,7 @@ def test_f7_push_point_falls_back_when_its_block_is_unplaceable():
 
     cells = ai.push_point_cells(s)
     assert cells[0] == ai.push_point_cell(s), "primary must be tried first"
-    assert 1 < len(cells) <= 5, "fallbacks must exist and stay bounded"
+    assert 1 < len(cells) <= 25, "fallbacks must exist and stay bounded"
 
     # Drown the primary block outright; targeting must still find a tile.
     for tx, ty in ai.block_tiles(*cells[0]):
@@ -795,31 +835,39 @@ def test_f7_push_point_falls_back_when_its_block_is_unplaceable():
 def test_f8_spread_gates_rather_than_merely_discounts():
     """`spread` began life as a plain ratio, which only lowered the score:
     the Zealot cleared its 0.05 idle floor on the way down and stacked all
-    three relics within three tiles, starving itself. It must gate."""
+    three relics within three tiles, starving itself. It must gate - on
+    every flag except the one the chain is stepping from, which is
+    `reach` away by construction (step 8b)."""
     env = _Env()
-    ai = _ai()
+    ai = RivalAI(1, PERSONALITIES["zealot"], _rival_cfg(**_SMALL_MAP),
+                 _power_cfg(), seed=0)
+    env.cm.citizens.clear()
+    for _ in range(4):
+        env.cm.citizens.append(env.cm._make_citizen(faction=0, x=2.0, y=12.0,
+                                                    age=10.0))
+    for _ in range(4):
+        env.cm.citizens.append(env.cm._make_citizen(faction=1, x=30.0, y=12.0,
+                                                    age=10.0))
+    # Front flag at x=16, rear flag at x=26 (enemy is at x=2).
     assert env.relics.place(1, 0, 16, 12, env.world, 0.0)[0]
+    assert env.relics.place(1, 1, 26, 12, env.world, 0.0)[0]
     s = _sense_only(ai, env)
+    assert ai.front_most(s).slot == 0
 
-    near = (17, 13)                                  # ~1.4 tiles away
-    far = (16 + 40, 12)                              # well clear
-    assert ai.spread(s, near) == 0.0
-    assert ai.spread(s, far) > 0.0
+    assert ai.spread(s, (27, 13)) == 0.0        # on the rear flag: gated
+    assert ai.spread(s, (17, 13)) == 1.0        # on the front flag: exempt
+    assert ai.spread(s, (8, 12)) == 1.0         # clear of everything
 
-    # With a relic already down, a push point on top of it scores nothing,
-    # so RELIC_PLACE cannot win the tick.
-    class _StuckAI(type(ai)):
-        def push_point_tile(self, s, world=None):
-            return near
-
-    stuck = _StuckAI(1, ai.p, _rival_cfg(), _power_cfg(), seed=0)
-    stuck._tpc_x, stuck._tpc_y = (env.belief.tiles_per_cell_x,
-                                  env.belief.tiles_per_cell_y)
-    stuck._grid_w, stuck._grid_h = env.belief.grid_w, env.belief.grid_h
-    u = stuck.utilities(s, env.ps, env.cm, env.world)
+    # With one flag down and the line too close for a step worth taking,
+    # the chain itself refuses - there is no push point to stack on.
+    assert env.relics.retrieve(1, 1, 1.0)[0]
+    assert env.relics.move(1, 0, 6, 12, env.world, 1.0)[0]   # 4 from the enemy
+    s = _sense_only(ai, env)
+    assert ai.push_reach(s) is None
+    u = ai.utilities(s, env.ps, env.cm, env.world)
     assert u[Intent.RELIC_PLACE] == 0.0
-    assert stuck.score(u)[Intent.RELIC_PLACE] == 0.0
+    assert ai.score(u)[Intent.RELIC_PLACE] == 0.0
 
     # An empty tray is still the unconditional 1.0 - nothing to stack on.
-    assert env.relics.retrieve(1, 0, 1.0)[0]
-    assert ai.spread(_sense_only(ai, env), near) == 1.0
+    assert env.relics.retrieve(1, 0, 2.0)[0]
+    assert ai.spread(_sense_only(ai, env), (17, 13)) == 1.0

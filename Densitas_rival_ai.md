@@ -332,7 +332,25 @@ step: without one the rear-most relic is always *some* distance from the
 push point, and the AI burned half its decisions shuffling flags it had
 already planted (157 relic acts in 300 decisions, measured).
 
-**Relic push point.** `lerp(seam_peak_cell, enemy_centroid,
+**Amendment 2026-09-11 (PR4 step 8b) — the push point is a chain, not a
+lerp.** Step 8's balance pass read the shatter summaries: with the lerp
+below, the Zealot's three flags died at (129,96), (126,97), (125,102) —
+the player spawns at (128,96) — inside 32 s. Sixty-five percent of the
+way from the seam to the enemy *centroid* is inside their temple once
+the seam sits near them. Replaced by `RivalAI.push_reach`: each new flag
+goes `relic_forward_bias × relic_step_tiles` (32) ahead of the
+*front-most* flag already planted (own centroid when none), straight at
+the enemy centroid, and never closer than `relic_standoff_tiles` (12) to
+that centroid or to any enemy relic (ray–circle entry). A reach shorter
+than the move deadband is not worth a flag: hold. RELIC_MOVE uses the
+same point, so the rear flag leapfrogs to the front until the line is
+reached. Fallbacks walk back along the ray *and* fan two cells either
+side of it — the ray is fixed now, and a lake across it was permanent
+(seed 42, measured). The spread gate exempts the flag being stepped
+from. Both distances are `[rival]` knobs. Result: flags forward, at the
+line, zero shattered across every seed and mode.
+
+**Relic push point (original text, superseded above).** `lerp(seam_peak_cell, enemy_centroid,
 relic_forward_bias)`, snapped to grid. Zealot bias 0.65 plants
 relics past the seam — greedy, shatter-prone, exactly right.
 Steward bias 0.15 keeps them home.
