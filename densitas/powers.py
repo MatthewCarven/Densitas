@@ -102,10 +102,11 @@ class ActiveEffect:
 
 @dataclass
 class ScriptureEntry:
-    """One scripture-log line."""
+    """One scripture-log line. `power` is None for a line that is not a
+    cast - relic verbs and conversion events (PR4 step 7a)."""
     sim_t: float                 # when emitted
     line: str
-    power: PowerKind
+    power: Optional[PowerKind]
     faction: int
 
 
@@ -194,8 +195,9 @@ class PowerSystem:
         # P3-Queue — pending click-chain casts per (faction, kind). FIFO.
         # See Densitas_queue.md. Drained by `drain_queues()`.
         self.queues: dict[tuple[int, int], list[QueuedCast]] = {}
-        # Hooks (None = stub; tests pass mocks).
-        self._rhetoric = rhetoric_pick or (lambda p, g, t: f"<{p}>")
+        # Hooks (None = stub; tests pass mocks). The stub takes `tokens`
+        # like the real picker does, so voice() can call both one way.
+        self._rhetoric = rhetoric_pick or (lambda p, g, t, tokens=None: f"<{p}>")
         self._mutate_tile = mutate_tile  # used by Raise/Lower in PR2
 
         # Per-kind dispatch table. Populated below.
@@ -332,11 +334,7 @@ class PowerSystem:
         # Scripture (suppressed by P3-Brush on tiles 2..N**2 of a bulk
         # cast — the first tile of the brush carries the voice).
         if not suppress_scripture:
-            god_key = god_key_for(faction)
-            line = self._rhetoric(spec.rhetoric_key, god_key, sim_t)
-            self.scripture_log.append(ScriptureEntry(sim_t, line, kind, faction))
-            if len(self.scripture_log) > self.cfg.scripture_log_max:
-                self.scripture_log = self.scripture_log[-self.cfg.scripture_log_max:]
+            self.voice(spec.rhetoric_key, faction, sim_t, power=kind)
 
         return CastReceipt(kind, faction, int(tx), int(ty), sim_t, sim_t,
                             ok=True, reason="")
@@ -549,13 +547,10 @@ class PowerSystem:
         spec = POWERS[qc.kind]
         tile_id = int(world.tiles[qc.ty, qc.tx])
         ok, _reason = _tile_valid_for(qc.kind, tile_id)
-        god_key = god_key_for(qc.faction)
         if not ok:
             self.cooldowns[(qc.faction, int(qc.kind))] = spec.cooldown
             if not qc.suppress_scripture:
-                line = self._rhetoric("queued_invalid", god_key, sim_t)
-                self.scripture_log.append(
-                    ScriptureEntry(sim_t, line, qc.kind, qc.faction))
+                self.voice("queued_invalid", qc.faction, sim_t, power=qc.kind)
             return
         # Set cooldown, then dispatch (belief was debited at enqueue).
         self.cooldowns[(qc.faction, int(qc.kind))] = spec.cooldown
@@ -569,9 +564,30 @@ class PowerSystem:
             sim_t=sim_t,
         )
         if not qc.suppress_scripture:
-            line = self._rhetoric(spec.rhetoric_key, god_key, sim_t)
-            self.scripture_log.append(
-                ScriptureEntry(sim_t, line, qc.kind, qc.faction))
+            self.voice(spec.rhetoric_key, qc.faction, sim_t, power=qc.kind)
+
+    # -- scripture ----------------------------------------------------------
+
+    def voice(self, key: str, faction: int, sim_t: float, *,
+              tokens: Optional[dict] = None,
+              power: Optional[PowerKind] = None) -> str:
+        """Pick a line for `faction`'s god and append it to the log.
+
+        PR4 step 7a: the one append site. Casts, queued dispatches, the
+        rival's relic verbs and the conversion coalescer all come through
+        here, so the cap and the god lookup live in exactly one place.
+        Returns the line (a `<key>` placeholder if the pool has no cell -
+        deliberately visible, so a missing cell is noticed, not hidden).
+        """
+        god_key = god_key_for(faction)
+        if tokens:
+            line = self._rhetoric(key, god_key, sim_t, tokens=tokens)
+        else:
+            line = self._rhetoric(key, god_key, sim_t)
+        self.scripture_log.append(ScriptureEntry(sim_t, line, power, faction))
+        if len(self.scripture_log) > self.cfg.scripture_log_max:
+            self.scripture_log = self.scripture_log[-self.cfg.scripture_log_max:]
+        return line
 
     # -- internals ----------------------------------------------------------
 

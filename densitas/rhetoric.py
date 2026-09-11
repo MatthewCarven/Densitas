@@ -11,6 +11,7 @@ Voice modes per GDD §10:
 `pick()` rotates modes by weighted draw and avoids immediate repeats.
 """
 from __future__ import annotations
+from dataclasses import dataclass
 import json
 import random
 from pathlib import Path
@@ -86,6 +87,12 @@ class Rhetoric:
         self._last[last_key] = line
         return self._interpolate(line, tokens)
 
+    def has(self, power_key: str, god_key: str) -> bool:
+        """True if the pool has at least one line for this (key, god).
+        PR4 step 7a: lets the coalescer decide whether a `<key>_many`
+        plural cell exists before it commits to it."""
+        return bool(self._pool.get(power_key, {}).get(god_key))
+
     @staticmethod
     def _interpolate(line: str, tokens: dict | None) -> str:
         if tokens is None:
@@ -110,6 +117,89 @@ class Rhetoric:
             if roll <= cur:
                 return mode
         return weights[-1][0]
+
+
+@dataclass
+class _Batch:
+    count: int
+    first_sim_t: float
+    tokens: dict
+
+
+class ScriptureCoalescer:
+    """PR4 step 7a - rate limiter for event-driven scripture (spec §4).
+
+    Conversion cascades along a seam fire dozens of events a second, and
+    the log must not spam. Rule: at most one line per (key, faction) per
+    `window` sim seconds. *Leading edge*: the first event in a quiet
+    window is voiced at once with `{count} = 1`, so a lone conversion
+    shows up the moment it happens. Everything after it inside the window
+    is batched and flushed as one line at the window's end with
+    `{count} = N`, from the `<key>_many` cell when the pool has one and
+    the singular cell (with `{count}` still substituted) when it does not.
+
+    `voice(key, faction, sim_t, tokens) -> str` does the picking and the
+    logging; `has(key, faction) -> bool` says whether a cell exists. Both
+    are injected so this class knows nothing about gods or the log.
+    """
+
+    def __init__(self, window: float,
+                 voice: Callable[[str, int, float, dict], str],
+                 has: Callable[[str, int], bool] | None = None) -> None:
+        self.window = max(0.0, float(window))
+        self._voice = voice
+        self._has = has or (lambda key, faction: True)
+        self._last_emit: dict[tuple[str, int], float] = {}
+        self._pending: dict[tuple[str, int], _Batch] = {}
+        self.lines = 0        # lines actually voiced
+        self.batched = 0      # events folded into a {count} line
+
+    def emit(self, key: str, faction: int, sim_t: float,
+             tokens: dict | None = None) -> str | None:
+        """Report one event. Returns the line if it was voiced now, else
+        None (it joined a batch)."""
+        k = (key, faction)
+        last = self._last_emit.get(k)
+        quiet = last is None or (sim_t - last) >= self.window
+        if k not in self._pending and quiet:
+            return self._fire(key, faction, sim_t, 1, tokens)
+        b = self._pending.get(k)
+        if b is None:
+            self._pending[k] = _Batch(1, sim_t, dict(tokens or {}))
+        else:
+            b.count += 1
+        return None
+
+    def tick(self, sim_t: float) -> list[str]:
+        """Flush every batch whose window has elapsed. Returns the lines."""
+        out: list[str] = []
+        for k in list(self._pending):
+            last = self._last_emit.get(k, float("-inf"))
+            if (sim_t - last) >= self.window:
+                b = self._pending.pop(k)
+                out.append(self._fire(k[0], k[1], sim_t, b.count, b.tokens))
+        return out
+
+    def flush(self, sim_t: float) -> list[str]:
+        """Voice every pending batch regardless of window - end of round."""
+        out: list[str] = []
+        for k in list(self._pending):
+            b = self._pending.pop(k)
+            out.append(self._fire(k[0], k[1], sim_t, b.count, b.tokens))
+        return out
+
+    def _fire(self, key: str, faction: int, sim_t: float, count: int,
+              tokens: dict | None) -> str:
+        toks = dict(tokens or {})
+        toks["count"] = count
+        use_key = key
+        if count > 1 and self._has(f"{key}_many", faction):
+            use_key = f"{key}_many"
+        self._last_emit[(key, faction)] = sim_t
+        self.lines += 1
+        if count > 1:
+            self.batched += count
+        return self._voice(use_key, faction, sim_t, toks)
 
 
 def make_picker(rhet: Rhetoric) -> Callable[[str, str, float], str]:

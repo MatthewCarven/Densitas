@@ -85,6 +85,11 @@ class RivalConfig:
     spawn_radius_tiles: int   = 5
     ai_base_period:     float = 2.0        # sim_s between decisions at difficulty 1.0
     ai_seed:            int   = 0
+    # PR4 step 7a: voice the rival's relic verbs into the scripture log.
+    # The player's own relic lines stay on stdout - a line confirming
+    # your own click tells you nothing; the Maw's tells you where to
+    # look. Decided 2026-09-11.
+    relic_scripture:    bool  = True
 
 
 PERSONALITIES: tuple[str, ...] = ("zealot", "steward", "trickster")

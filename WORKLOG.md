@@ -1649,3 +1649,55 @@ The step-6 self-starvation is density (foraging searches from the
 citizen's current position, so a crowded attractor disc empties), i.e. a
 knob, not a bug. §14's "after this PR the Maw can genuinely extinguish
 you" came true on two seeds of three; still P5's.
+
+---
+
+## 2026-09-11 — PR4 step 7a: scripture machinery (the lines can wait)
+
+Spec: `Densitas_rival_ai.md` §4, §12-G (machinery half), §13 as amended
+today.
+
+- **`CitizenEvent` + `CitizenManager.drain_events()`** — the flip and
+  the despair sites in `tick()` now append an event (`kind`, factions,
+  citizen id, tile, sim_t). Cumulative `conversions[(from, to)]` and
+  `despairs[faction]` counters alongside, so the acceptance harness can
+  ask "how many?" without draining. Before this the flip happened with
+  no way for anything upstream to know.
+- **`ScriptureCoalescer`** (rhetoric.py) — §4's rate limiter. Leading
+  edge: the first event in a quiet window is voiced at once with
+  `{count}=1`; everything after it inside the window batches and flushes
+  as one line at the window's end. Picks `<key>_many` for `count > 1`
+  when the pool has that cell (`Rhetoric.has`, new), the singular cell
+  with `{count}` still substituted when it does not. `voice` and `has`
+  are injected, so the class knows nothing about gods or the log.
+- **`PowerSystem.voice()`** — the one scripture append site. `cast()`,
+  both queued-dispatch paths, the rival's relic verbs and the coalescer
+  all go through it; the cap and the god lookup live in exactly one
+  place. `ScriptureEntry.power` is `Optional` now - None for a line that
+  is not a cast. Nothing read that field.
+- **Rival relic verbs voiced** — `RivalAI._execute` calls `voice()` with
+  the same `relic_placed` / `relic_moved` / `relic_retrieved` keys and
+  `{relic_name}` token the player's stdout line uses. Behind
+  `[rival] relic_scripture` (default true). The player's own relic lines
+  stay on stdout, per this morning's decision.
+- **main.py** — drains events after `citizen_mgr.tick`, feeds the
+  coalescer (`citizen_converted` to the *gaining* god, `citizen_despair`
+  to the *abandoned* one), ticks it. The `has` callable comes from the
+  `Rhetoric` object main already holds, so `PowerSystem` never learns
+  about pools.
+
+**Tests:** 255 / 255 (248 + 7), new `tests/test_scripture.py`. G1
+(leading edge + one batch per window, keys and factions independent),
+G2 (singular / `_many` / fallback / and the blind case where a missing
+plural cell shows its placeholder rather than hiding), G5 (no-repeat
+across consecutive coalesced flushes). H1-H4 cover the event channel
+both ways, the relic voice behind its toggle, and `voice()` capping the
+log. G3/G4 are 7b's.
+
+**Smoke, contested 8 v 8, 400 sim_s, real `rhetoric.json`:** 9
+conversions → 7 lines, 4 events folded into two `count=2` batches at
+the 5 s boundaries. Every line is `<citizen_converted>` - the cells do
+not exist yet, which is the point of 7b. Live `--ai-debug` boot clean
+with the relic voice wired.
+
+Also fixed the brief's Maw cast list (Hunger Pang was missing).

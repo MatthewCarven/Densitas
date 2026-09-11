@@ -94,6 +94,13 @@ INTENT_POWER: dict[Intent, PowerKind] = {
     Intent.CAST_BLESS:       PowerKind.BLESS,
 }
 
+# Relic intent -> rhetoric.json key (PR4 step 7a).
+_RELIC_SCRIPTURE_KEY: dict[Intent, str] = {
+    Intent.RELIC_PLACE:    "relic_placed",
+    Intent.RELIC_MOVE:     "relic_moved",
+    Intent.RELIC_RETRIEVE: "relic_retrieved",
+}
+
 # Every scoreable intent, in stable order. IDLE is the floor, not a
 # candidate, so it is absent. Order is load-bearing: the jitter vector is
 # drawn against it, so changing it changes every seeded decision stream.
@@ -274,6 +281,10 @@ class RivalAI:
         self.god_key = god_key_for(self.faction)
         self.forbidden: frozenset[PowerKind] = GOD_FORBIDS.get(
             self.god_key, frozenset())
+        # PR4 step 7a: the rival's relic verbs are voiced into the log -
+        # the only channel through which its relic play reaches the
+        # player. Casts already voice themselves inside `cast()`.
+        self.relic_scripture = bool(getattr(rival_cfg, "relic_scripture", True))
 
         # §6 cadence. `difficulty` scales it and nothing else. The
         # one-logic-tick floor is applied per call, in `tick`, because the
@@ -874,13 +885,15 @@ class RivalAI:
             # §3.1). Shuffling it a couple of tiles is strictly a loss.
             if dist((rear.tx, rear.ty), (tx, ty)) <= _MOVE_DEADBAND_TILES:
                 return False, "move too short to pay for its fade-in"
-            ok, why = relic_mgr.move(self.faction, rear.slot, tx, ty,
+            slot = rear.slot
+            ok, why = relic_mgr.move(self.faction, slot, tx, ty,
                                      world, sim_t)
         elif intent == Intent.RELIC_RETRIEVE:
             worst = self.most_threatened(s)
             if worst is None:
                 return False, "nothing placed to retrieve"
-            ok, why = relic_mgr.retrieve(self.faction, worst.slot, sim_t)
+            slot = worst.slot
+            ok, why = relic_mgr.retrieve(self.faction, slot, sim_t)
         else:
             return False, f"no verb for {intent.name}"
 
@@ -893,6 +906,12 @@ class RivalAI:
         # placement and after a shatter; the AI owes the same for its own.
         citizens.sync_attractors_from_relics(
             relic_mgr.relics, self.powers_cfg.relic.attract_radius)
+        if self.relic_scripture:
+            # Same keys and `{relic_name}` token the player's stdout line
+            # uses (main.py's R-key handler), through the one log site.
+            power_system.voice(
+                _RELIC_SCRIPTURE_KEY[intent], self.faction, sim_t,
+                tokens={"relic_name": relic_mgr.get(self.faction, slot).name})
         return True, why
 
 

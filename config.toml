@@ -60,6 +60,7 @@ spawn_frac_y       = 0.50        # fraction of map height
 spawn_radius_tiles = 5
 ai_base_period     = 2.0         # sim_s between decisions at difficulty 1.0
 ai_seed            = 0
+relic_scripture    = true        # voice the Maw's relic verbs in the scripture log
 
 [belief]
 grid_w            = 64

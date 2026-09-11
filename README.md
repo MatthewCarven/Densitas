@@ -154,6 +154,15 @@ It is not balanced yet. A Zealot that gets its relics planted will
 usually convert the player faction out of existence; one that overextends
 loses all three to the shatter rule and withers. Balance is step 8's.
 
+Conversions and despairs are voiced in the scripture log (PR4 step 7a):
+the gaining god claims a convert, the abandoned god mourns a despair. A
+cascade along a seam is rate-limited to one line per god per
+`scripture_coalesce_window` — the first at once, the rest of the window
+folded into a `{count}` line. The Maw's relic placements are voiced too
+(`[rival] relic_scripture = false` to silence them); your own relic
+lines stay on the console. Until step 7b writes the cells, conversion
+lines show as `<citizen_converted>` placeholders on purpose.
+
 ### Debug flags
 
 - `--seed-relics` — place the six hardcoded debug relics (three per god,

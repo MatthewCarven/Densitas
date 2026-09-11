@@ -40,7 +40,7 @@ Chthonic. Bone-and-blood in iconography. Order: the Hungry.
 - Tone: blunt, declarative, never sentimental. The Maw does not soften.
 - Frequent use of *mouth*, *teeth*, *eat*, *appetite*, *bone*, *swallow*, *fast* (as in fasting).
 
-**Casts:** Plague, Lower Terrain, Comet, Hurricane. Never Bless.
+**Casts:** Hunger Pang, Curse, Lower Terrain; later Plague, Comet, Hurricane. Never Bless. *(Hunger Pang is the Maw's most-cast power as of PR4 step 5 - the cheap, constant one. Its cell is the first gap 7b fills.)*
 
 ---
 

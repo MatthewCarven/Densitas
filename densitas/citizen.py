@@ -34,6 +34,7 @@ P3 PR2 adds the drown rule:
 """
 from __future__ import annotations
 import enum
+from collections import Counter
 import math
 from dataclasses import dataclass
 from typing import Iterable, Optional, TYPE_CHECKING
@@ -130,6 +131,27 @@ class Citizen:
     death_cause: str = ""             # "" until DYING; then age / starvation / drown / despair
 
 
+@dataclass(frozen=True)
+class CitizenEvent:
+    """PR4 step 7a: something that happened to a citizen that the rest of
+    the game needs to hear about. Today that is the two faith outcomes
+    (`Densitas_rival_ai.md` §2.3, §4): `kind` is "converted" (the flip
+    completed; `to_faction` is the gaining god) or "despair" (faith
+    collapsed with nowhere to go; `to_faction == from_faction`).
+
+    Read them with `CitizenManager.drain_events()`. Before this existed
+    the flip happened deep inside `tick()` with no way for the scripture
+    log - or the acceptance harness - to know it had.
+    """
+    kind:         str
+    sim_t:        float
+    citizen_id:   int
+    from_faction: int
+    to_faction:   int
+    tx:           int
+    ty:           int
+
+
 class CitizenManager:
     """Owns the population and advances the simulation by sim-seconds.
 
@@ -160,8 +182,23 @@ class CitizenManager:
         # Stored as a list of tuples (not Relic objects) so we don't have
         # to think about object lifetime during wander picks.
         self.attractors: list[tuple[int, int, int, int]] = []
+        # PR4 step 7a: pending CitizenEvents, appended by tick() and taken
+        # by drain_events(). Cumulative counters alongside so a caller
+        # that never drains (the acceptance harness, a HUD readout) can
+        # still ask "how many so far?". Keyed by faction, not indexed, so
+        # nothing here assumes how many gods there are.
+        self.events: list[CitizenEvent] = []
+        self.conversions: Counter = Counter()   # (from_faction, to_faction) -> n
+        self.despairs: Counter = Counter()      # faction -> n
 
     # -- public API ---------------------------------------------------------
+
+    def drain_events(self) -> list[CitizenEvent]:
+        """Return every CitizenEvent since the last drain, and forget them.
+        The counters are untouched - they are cumulative by design."""
+        out = self.events
+        self.events = []
+        return out
 
     def population(self, faction: int = 0) -> int:
         """Count of alive citizens (not in DYING) belonging to `faction`."""
@@ -271,6 +308,10 @@ class CitizenManager:
                         c.state = CitizenState.DYING
                         c.state_timer = cfg.dying_duration
                         c.death_cause = "despair"
+                        self.events.append(CitizenEvent(
+                            "despair", self._sim_t, c.id, c.faction,
+                            c.faction, int(c.x), int(c.y)))
+                        self.despairs[c.faction] += 1
                         continue
                     if (c.state != CitizenState.CONVERTED
                             and c.faith <= fa.convert_threshold
@@ -340,8 +381,13 @@ class CitizenManager:
                     continue
                 c.state_timer -= dt
                 if c.state_timer <= 0.0:
+                    old_faction = c.faction
                     c.faction = 1 - c.faction
                     c.faith = fa.convert_faith_reset
+                    self.events.append(CitizenEvent(
+                        "converted", self._sim_t, c.id, old_faction,
+                        c.faction, int(c.x), int(c.y)))
+                    self.conversions[(old_faction, c.faction)] += 1
                     # Their old life is over: home is where they knelt.
                     c.home_x = float(int(c.x)) + 0.5
                     c.home_y = float(int(c.y)) + 0.5

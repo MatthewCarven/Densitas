@@ -45,7 +45,7 @@ from .belief import BeliefField
 from .food import FoodField
 from .hud import HUD
 from .powers import PowerSystem, PowerKind, POWERS
-from .rhetoric import Rhetoric, make_picker
+from .rhetoric import Rhetoric, ScriptureCoalescer, make_picker
 from .rival_ai import make_rival_ai
 from .relics import (
     RelicManager, RelicState,
@@ -354,6 +354,19 @@ def main(argv: list[str] | None = None) -> int:
               f"(difficulty {cfg.rival.difficulty:g})"
               + ("  [--ai-debug]" if rival_ai.debug else ""))
 
+    # PR4 step 7a (spec §4): conversion and despair events come out of the
+    # citizen manager and are voiced through a coalescer - the first in a
+    # quiet window at once, the rest of the window as one `{count}` line.
+    # `has` lets it pick the `_many` plural cell only when the pool has
+    # one; until step 7b fills the cells, every line is a visible `<key>`
+    # placeholder, deliberately.
+    coalescer = ScriptureCoalescer(
+        cfg.citizen.faith.scripture_coalesce_window,
+        voice=lambda key, faction, t, tokens: power_system.voice(
+            key, faction, t, tokens=tokens),
+        has=lambda key, faction: rhet.has(key, _relic_god_key(faction)),
+    )
+
     hud = HUD()
 
     cam = Camera(
@@ -646,6 +659,16 @@ def main(argv: list[str] | None = None) -> int:
             # read the PREVIOUS tick's field (recompute runs just below) -
             # a one-tick lag the 5 Hz cadence absorbs invisibly.
             citizen_mgr.tick(tick_dt, world, food, belief=belief)
+            # PR4 step 7a: voice the faith outcomes. `citizen_converted`
+            # belongs to the GAINING god, `citizen_despair` to the god they
+            # were abandoning - the loser's silence on a conversion is
+            # on-brand (spec §4).
+            for _ev in citizen_mgr.drain_events():
+                if _ev.kind == "converted":
+                    coalescer.emit("citizen_converted", _ev.to_faction, sim_time)
+                elif _ev.kind == "despair":
+                    coalescer.emit("citizen_despair", _ev.from_faction, sim_time)
+            coalescer.tick(sim_time)
             # PR3 step 2: pass the live relic list + current sim_t so
             # each PLACED relic contributes amplitude * min(1.0,
             # (sim_t - placed_at) / place_cooldown) to its belief cell.
