@@ -190,8 +190,18 @@ class CitizenManager:
         self.events: list[CitizenEvent] = []
         self.conversions: Counter = Counter()   # (from_faction, to_faction) -> n
         self.despairs: Counter = Counter()      # faction -> n
+        # PR4 step 8c: alive population per faction, refreshed at the top
+        # of every tick for the attractor scaling. Empty until the first
+        # tick; `_alive_pop` counts live in that case.
+        self._pop_cache: dict[int, int] = {}
 
     # -- public API ---------------------------------------------------------
+
+    def _alive_pop(self, faction: int) -> int:
+        """Alive population, from the per-tick cache once tick() has run,
+        counted live before that (tests call the wander pick directly)."""
+        n = self._pop_cache.get(faction)
+        return self.population(faction) if n is None else n
 
     def drain_events(self) -> list[CitizenEvent]:
         """Return every CitizenEvent since the last drain, and forget them.
@@ -254,6 +264,9 @@ class CitizenManager:
         despair -> DYING, or convert -> CONVERTED and the faction flip.
         """
         self._sim_t += dt
+        self._pop_cache = dict(Counter(
+            c.faction for c in self.citizens
+            if c.state != CitizenState.DYING))
         new_citizens: list[Citizen] = []
         dead_idx: list[int] = []
         cfg = self.cfg
@@ -741,7 +754,16 @@ class CitizenManager:
         if self.attractors and c.state != CitizenState.FORAGE \
                 and self.relic_cfg is not None:
             mine = [a for a in self.attractors if a[3] == c.faction]
-            if mine and self._rng.random() < self.relic_cfg.attract_probability:
+            if mine:
+                # PR4 step 8c: the pull scales with the faction's alive
+                # population. A village of ten doesn't send pilgrims -
+                # spread across two attractor discs, nobody in it is
+                # within mating range of anybody, and it dies of age with
+                # no births (measured, versus and mirror runs).
+                ref = max(1, int(getattr(self.relic_cfg, "attract_pop_ref", 1)))
+                scale = min(1.0, self._alive_pop(c.faction) / ref)
+                pull = self.relic_cfg.attract_probability * scale
+            if mine and self._rng.random() < pull:
                 idx = int(self._rng.integers(0, len(mine)))
                 tx_i, ty_i, R, _ = mine[idx]
                 target = self._random_in_disc(tx_i, ty_i, R, world)

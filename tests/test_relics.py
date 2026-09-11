@@ -43,6 +43,7 @@ def _make_relic_cfg(initial_count: int = 3) -> RelicConfig:
         shatter_time=8.0,
         attract_radius=8,
         attract_probability=0.4,
+        attract_pop_ref=1,          # step 8c scaling off: these are lone-citizen tests
         initial_count=initial_count,
     )
 
@@ -732,6 +733,59 @@ def test_11_forage_state_ignores_attractors():
         f"FORAGE citizen pulled toward attractor: {hits}/1000 hits"
     )
 
+
+
+# ---------------------------------------------------------------------------
+# PR4 step 8c: the pull scales with the faction's alive population.
+# ---------------------------------------------------------------------------
+
+def test_12_attraction_scales_with_population():
+    """`attract_probability x clamp01(pop / attract_pop_ref)`. A lone
+    citizen with ref=40 is pulled about 1/40th as often as the headline
+    number; at pop >= ref the pull is the full 0.4; ref=1 switches the
+    scaling off. The extra citizens are parked far from home so they
+    change the count and nothing else."""
+    import dataclasses
+    w = _make_world(width=80, height=60)
+    relic_tx, relic_ty = 50, 30
+
+    def hit_ratio(cfg, extra_pop):
+        mgr = RelicManager(cfg, n_factions=2)
+        mgr.place(0, 0, tx=relic_tx, ty=relic_ty, world=w, sim_t=0.0)
+        cm = _make_lone_citizen_mgr(w, relic_cfg=cfg, home=(20, 20))
+        me = cm.citizens[0]
+        for k in range(extra_pop):
+            cm.citizens.append(dataclasses.replace(
+                me, id=100 + k, x=5.0, y=55.0, home_x=5.0, home_y=55.0,
+                target_x=5.0, target_y=55.0))
+        cm.sync_attractors_from_relics(mgr.relics, cfg.attract_radius)
+        hits = sum(
+            1 for _ in range(1000)
+            if math.hypot(*(a - b for a, b in zip(
+                cm._pick_wander_target(me, w), (relic_tx, relic_ty))))
+            <= cfg.attract_radius)
+        return hits / 1000
+
+    scaled = dataclasses.replace(_make_relic_cfg(), attract_pop_ref=40)
+    assert hit_ratio(scaled, extra_pop=0) <= 0.03       # 0.4 / 40 = 0.01
+    assert 0.35 <= hit_ratio(scaled, extra_pop=39) <= 0.45   # pop 40: full
+    assert 0.15 <= hit_ratio(scaled, extra_pop=19) <= 0.25   # pop 20: half
+
+    off = dataclasses.replace(_make_relic_cfg(), attract_pop_ref=1)
+    assert 0.35 <= hit_ratio(off, extra_pop=0) <= 0.45
+
+    # After a tick, the per-tick cache is what the pick reads - and a
+    # DYING citizen is not alive for this purpose.
+    mgr = RelicManager(scaled, n_factions=2)
+    mgr.place(0, 0, tx=relic_tx, ty=relic_ty, world=w, sim_t=0.0)
+    cm = _make_lone_citizen_mgr(w, relic_cfg=scaled, home=(20, 20))
+    for k in range(39):
+        cm.citizens.append(dataclasses.replace(
+            cm.citizens[0], id=100 + k, x=5.0, y=55.0, home_x=5.0,
+            home_y=55.0, target_x=5.0, target_y=55.0,
+            state=CitizenState.DYING, state_timer=99.0))
+    cm.tick(0.2, w, None)
+    assert cm._alive_pop(0) == 1
 
 # ---------------------------------------------------------------------------
 # Smoke tests

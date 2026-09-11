@@ -147,4 +147,6 @@ shatter_time         = 8.0
 attract_radius       = 8
 attract_probability  = 0.15      # was 0.4; see PR4 step 8 (2026-09-11) - at 0.4 a
                                   # faction huddles under its own relics and starves
+attract_pop_ref      = 40        # pull scales up to full at this many alive citizens;
+                                  # a village of ten doesn't send pilgrims (step 8c). 1 = off
 initial_count        = 3

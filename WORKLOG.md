@@ -1872,3 +1872,43 @@ The relic-threat criterion is structurally out of reach while amplitude
 is 20 and the standoff is 12: the Maw halts 12 tiles from the player's
 relics by design, and its bled belief never approaches 1.5 × 20.
 Resolves with the amplitude decision, not with targeting.
+
+---
+
+## 2026-09-11 — PR4 step 8c: a village of ten doesn't send pilgrims
+
+Matthew's yes to the held proposal from 8b.
+
+- **`[powers.relic] attract_pop_ref = 40`** — the relic pull is now
+  `attract_probability × clamp01(alive_pop / attract_pop_ref)`. Alive
+  population per faction is cached at the top of `CitizenManager.tick`
+  (`_pop_cache`) and counted live when the wander pick is called
+  outside a tick, which the lone-citizen tests do. `1` disables the
+  scaling; the existing attractor tests set it, since they measure a
+  single citizen's pull. `Densitas_relics.md` §8 carries the amendment.
+- `tests/test_relics.py` test 12: 1/40th pull at population one, half at
+  twenty, full at forty, off at ref=1, and a DYING citizen not counted.
+
+**Tests:** 258 / 258 + 1 skipped.
+
+**Before / after, versus (Steward Open Eye v Zealot Maw), seeds 0/1/2:**
+
+| | 8b | 8c |
+|---|---|---|
+| final pops | 68 v **0**, 61 v **1**, 65 v 141 | 80 v 176, 50 v 192, 71 v 183 |
+| Maw peak | 11, 17, 143 | 187, 197, 183 |
+| conversions 0→1 | 0, 1, 4 | 0, 3, 1 |
+
+Mirror match (Zealot v Zealot): 106 v 190, 108 v 147, 122 v 149 - the
+0.75-spawn Maw that died of age at ~500 s on two seeds now out-grows the
+centre faction. Passive: 100 v 147, 62 v 144, 62 v 148, conversions
+0 / 1 / 6. No extinction, no starvation, no shattered flag, in any of
+the nine rounds. The healthiest board of the day.
+
+**Acceptance:** places ≥ 2, casts ≥ 10, pool ≥ 0 PASS every run.
+Converts ≥ 5: one run of six (passive seed 2, six conversions). Relic
+threat: none. Both remaining failures are the amplitude-20 fortress -
+the Maw halts twelve tiles from relics worth twenty citizens each and
+its bled belief never approaches 1.5× that. That decision is parked
+with Matthew, and nothing in targeting or demographics is left in its
+way.

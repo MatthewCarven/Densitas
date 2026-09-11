@@ -288,7 +288,13 @@ if c.state == CitizenState.FORAGE:
 
 # Per-faction attractors only.
 mine = [a for a in self.attractors if a[3] == c.faction]
-if mine and self.rng.random() < self.cfg.attract_probability:
+# PR4 step 8c amendment (2026-09-11): the pull scales with the faction's
+# alive population - attract_probability x clamp01(pop / attract_pop_ref),
+# attract_pop_ref = 40. A village of ten doesn't send pilgrims: below
+# this, two attractor discs twenty tiles apart left nobody within mating
+# range and the Maw died of age with no births. attract_probability
+# itself went 0.4 -> 0.15 in step 8 (self-starvation under own relics).
+if mine and self.rng.random() < self.cfg.attract_probability * scale:
     tx, ty, R, _ = self.rng.choice(mine)
     # Uniform within disc of radius R.
     return self._random_in_disc(tx, ty, R)

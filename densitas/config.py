@@ -184,6 +184,12 @@ class RelicConfig:
     attract_radius: int
     attract_probability: float
     initial_count: int
+    # PR4 step 8c (2026-09-11): the pull scales with the faction's alive
+    # population - `attract_probability x clamp01(pop / attract_pop_ref)`.
+    # A village of ten doesn't send pilgrims. Below this, two attractor
+    # discs twenty tiles apart left nobody within mating range and the
+    # Maw died of age with no births. 1 disables the scaling.
+    attract_pop_ref: int = 40
 
 
 @dataclass(frozen=True)
