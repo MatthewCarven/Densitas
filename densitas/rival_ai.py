@@ -285,6 +285,14 @@ class RivalAI:
         # the only channel through which its relic play reaches the
         # player. Casts already voice themselves inside `cast()`.
         self.relic_scripture = bool(getattr(rival_cfg, "relic_scripture", True))
+        # PR4 step 8: the relic-targeting distances are `[rival]` config
+        # now; the module constants stay as the documented defaults.
+        self.spread_tiles = float(getattr(
+            rival_cfg, "relic_spread_tiles", _RELIC_SPREAD_TILES))
+        self.move_deadband = float(getattr(
+            rival_cfg, "move_deadband_tiles", _MOVE_DEADBAND_TILES))
+        self.drift_ref = float(getattr(
+            rival_cfg, "drift_ref_tiles", _DRIFT_REF_TILES))
 
         # §6 cadence. `difficulty` scales it and nothing else. The
         # one-logic-tick floor is applied per call, in `tick`, because the
@@ -483,10 +491,10 @@ class RivalAI:
             push = self.push_point_tile(s, world)
             if push is not None:
                 drift = dist((rear.tx, rear.ty), push)
-                span = max(_EPS, _DRIFT_REF_TILES - _MOVE_DEADBAND_TILES)
-                if drift > _MOVE_DEADBAND_TILES:
+                span = max(_EPS, self.drift_ref - self.move_deadband)
+                if drift > self.move_deadband:
                     u[Intent.RELIC_MOVE] = clamp01(
-                        (drift - _MOVE_DEADBAND_TILES) / span)
+                        (drift - self.move_deadband) / span)
 
         # RELIC_RETRIEVE - dead flat until `retrieve_panic`, then ramps.
         if s.own_placed:
@@ -628,9 +636,10 @@ class RivalAI:
         if not s.own_placed:
             return 1.0
         nearest = min(dist((r.tx, r.ty), push) for r in s.own_placed)
-        if nearest < _RELIC_SPREAD_TILES:
+        if nearest < self.spread_tiles:
             return 0.0
-        return clamp01((nearest - _RELIC_SPREAD_TILES) / _RELIC_SPREAD_TILES)
+        return clamp01((nearest - self.spread_tiles)
+                       / max(_EPS, self.spread_tiles))
 
     def place_slot(self, s: Senses) -> Optional[int]:
         """The slot RELIC_PLACE would consume: the lowest free one.
@@ -883,7 +892,7 @@ class RivalAI:
             # A move resets `placed_at`, so the relic pays a full
             # belief fade-in for the privilege (`Densitas_relics.md`
             # §3.1). Shuffling it a couple of tiles is strictly a loss.
-            if dist((rear.tx, rear.ty), (tx, ty)) <= _MOVE_DEADBAND_TILES:
+            if dist((rear.tx, rear.ty), (tx, ty)) <= self.move_deadband:
                 return False, "move too short to pay for its fade-in"
             slot = rear.slot
             ok, why = relic_mgr.move(self.faction, slot, tx, ty,

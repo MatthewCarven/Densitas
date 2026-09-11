@@ -154,6 +154,14 @@ It is not balanced yet. A Zealot that gets its relics planted will
 usually convert the player faction out of existence; one that overextends
 loses all three to the shatter rule and withers. Balance is step 8's.
 
+A headless harness runs a full round without a window: `python -m
+densitas.harness` prints PR4's acceptance matrix (three AI seeds, a
+passive-player round and an AI-vs-AI Steward-versus-Zealot round each,
+about 25 s), and `run_round()` is importable for any balance question.
+As of step 8 the Maw casts and plants everything it has but does not yet
+convert anyone in a default round - the two civilisations start 64
+tiles apart and never meet. That is the open design item; see `TODO.md`.
+
 Conversions and despairs are voiced in the scripture log (PR4 step 7a):
 the gaining god claims a convert, the abandoned god mourns a despair. A
 cascade along a seam is rate-limited to one line per god per

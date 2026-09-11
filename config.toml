@@ -61,6 +61,11 @@ spawn_radius_tiles = 5
 ai_base_period     = 2.0         # sim_s between decisions at difficulty 1.0
 ai_seed            = 0
 relic_scripture    = true        # voice the Maw's relic verbs in the scripture log
+# Relic targeting distances (world tiles) - PR4 step 8 promoted these
+# from rival_ai.py constants. All three are balance dials.
+relic_spread_tiles  = 16.0       # a new flag must be this clear of the planted ones
+move_deadband_tiles = 8.0        # a flag drifts this far before RELIC_MOVE touches it
+drift_ref_tiles     = 32.0       # drift at which RELIC_MOVE's utility saturates
 
 [belief]
 grid_w            = 64
@@ -138,5 +143,6 @@ place_cooldown       = 30.0
 shatter_ratio        = 1.5
 shatter_time         = 8.0
 attract_radius       = 8
-attract_probability  = 0.4
+attract_probability  = 0.15      # was 0.4; see PR4 step 8 (2026-09-11) - at 0.4 a
+                                  # faction huddles under its own relics and starves
 initial_count        = 3

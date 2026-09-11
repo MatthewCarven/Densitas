@@ -90,6 +90,12 @@ class RivalConfig:
     # your own click tells you nothing; the Maw's tells you where to
     # look. Decided 2026-09-11.
     relic_scripture:    bool  = True
+    # PR4 step 8: the step-6 relic-targeting distances, in world tiles.
+    # They started as module constants in rival_ai.py; they are balance
+    # dials, so they live here. rival_ai.py documents what each gates.
+    relic_spread_tiles:  float = 16.0  # a new flag must be this clear of the planted ones
+    move_deadband_tiles: float = 8.0   # a flag drifts this far before RELIC_MOVE touches it
+    drift_ref_tiles:     float = 32.0  # drift at which RELIC_MOVE's utility saturates
 
 
 PERSONALITIES: tuple[str, ...] = ("zealot", "steward", "trickster")

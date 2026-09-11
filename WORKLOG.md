@@ -1701,3 +1701,99 @@ not exist yet, which is the point of 7b. Live `--ai-debug` boot clean
 with the relic voice wired.
 
 Also fixed the brief's Maw cast list (Hunger Pang was missing).
+
+---
+
+## 2026-09-11 — PR4 step 8: harness, knobs, and a balance pass that found a design gap
+
+Spec: `Densitas_rival_ai.md` §13 as amended this morning.
+
+**Landed:**
+
+- **`densitas/harness.py`** — `run_round()` is main.py's 5 Hz loop
+  without pygame, same order of operations, same entry points, same
+  scripture path. `mode="versus"` puts a second `RivalAI` in the
+  player's seat (Steward by default) so the Maw is measured against
+  something that fights back. `run_matrix()` + `report()` evaluate §13's
+  acceptance per criterion; `python -m densitas.harness` prints the
+  matrix (6 rounds, ~25 s). Every balance question so far had been
+  answered by a scratch script re-typing this loop; now there is one
+  copy and it is under test.
+- **Step-6 constants → `[rival]` config** — `relic_spread_tiles`,
+  `move_deadband_tiles`, `drift_ref_tiles`. The module constants stay as
+  the documented defaults.
+- **`[powers.relic] attract_probability` 0.4 → 0.15.** The one dial with
+  unambiguous evidence, below. A PR3 number changed under PR4; the
+  deviation is noted in config.toml and here.
+- `tests/test_harness.py` — two fast structural tests plus the full
+  acceptance matrix behind `DENSITAS_ACCEPTANCE=1`, skipped by default
+  because its numbers are balance and balance is playtest's to move.
+
+**Tests:** 257 / 257 + 1 skipped.
+
+**The balance pass.** Nine bounded experiments, each one dial, full
+matrix (3 `ai_seed` × passive/versus × 600 sim_s). Findings in order of
+confidence:
+
+1. **Relic attractors starve their own faction.** At
+   `attract_probability` 0.4 the passive player ends at 13-33 citizens
+   from a peak of 40-60, with zero conversions - the deaths are
+   starvation from huddling in three attractor discs. At 0.15: 62-110.
+   At 0.0: 130-141. Three seeds, every configuration, same direction.
+   The mechanism is the step-6 finding (foraging searches from the
+   citizen's position, so a crowded disc empties) hitting whoever
+   places relics. **Changed to 0.15** - the value at which populations
+   are healthy and the Maw still plants.
+
+2. **The Zealot marches its relics into the enemy's temple.** Shatter
+   summaries from a passive run: the Maw's three flags died at
+   (129,96), (126,97), (125,102) - the player spawns at (128,96) - with
+   own belief 0.6-0.9 against 2.5-4.2, having spent 8-32 s placed.
+   `relic_forward_bias` 0.65 lerps 65 % of the way from the seam to the
+   *enemy centroid*; once the seam sits near the enemy that is inside
+   their core, not "past the seam". Lowering the bias (0.35, 0.20) stops
+   the suicide but exposes a coupling with my step-6 spread gate: the
+   push point then never moves 16 tiles from flag one, so the Maw plants
+   exactly one relic and stops. **Not changed** - the fix is a targeting
+   redesign, not a number (below).
+
+3. **Relic amplitude 20 is a fortress at PR4's population scale.**
+   Chosen in PR3 when equilibrium was 700-1000 citizens; in a 600 s
+   round populations are 8-100 and three placed relics outweigh a
+   faction. Lowering it to 5 alone changed nothing measurable, because
+   finding 2 kills the Maw's relics regardless. **Not changed** - it is
+   the right lever once 2 is fixed, and it changes the player's relic
+   feel from PR3, so it is Matthew's call.
+
+4. **The conversion cascade has no damping.** In the runs where contact
+   did happen early against a one-relic Steward (attractors off), the
+   Maw converted 36-38 citizens and extinguished the Open Eye at 144 s
+   and 146 s. Positive feedback: a converted citizen adds to the
+   converting field. `[citizen.faith] drain_rate` 0.08 is the dial; it
+   needs a human on the other side before it is touched.
+
+5. **Contact is the whole problem.** Two clusters 64 tiles apart with
+   home-anchored wander (radius 6) are two islands. Step 6's forward
+   relics were the contact mechanism; findings 2 and 3 are why it does
+   not work. Every run without contact is 0 conversions and both
+   factions growing; every run with it is chaotic. There is no dial
+   between those.
+
+**Acceptance at the committed config** (world seed 42, `ai_seed`
+0/1/2): places ≥ 2 PASS both modes (3-4 every run), casts ≥ 10 PASS,
+pool ≥ 0 PASS, player relic threat PASS in versus (0.30 on one run),
+**converts ≥ 5 FAIL on every run** (0, 0, 3 / 0, 0, 0). The Maw is
+present - it casts 150 times and plants every flag it has - but it does
+not convert, because it cannot reach anyone to convert.
+
+**Decision needed (Matthew):** the acceptance criterion the spec cares
+most about needs a contact mechanism the design does not yet have. The
+smallest honest fix is a targeting change in step 6's code: anchor each
+successive relic on the *front-most placed relic* rather than the
+centroid, pushed forward by a fixed distance and capped short of the
+enemy's own relics - a chain of flags toward the seam rather than one
+flag lobbed at the temple. That makes contact deterministic, respects
+the spread gate, and gives `relic_forward_bias` a meaning that survives
+the seam moving. Alternatives: closer `spawn_frac_x`, or a wander radius
+that grows with population. Held rather than built, per the working
+agreement - three findings deep is where acting becomes redesigning.
