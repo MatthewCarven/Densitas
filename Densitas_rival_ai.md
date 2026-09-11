@@ -479,8 +479,40 @@ Plus the headless acceptance run in step 8.
 | 4 | `rival_ai.py` skeleton: personality dataclass + presets, cadence, senses, scoring, decision log, `--ai-debug`; all intents no-op | D |
 | 5 | Cast intents live (CURSE / HUNGER_PANG / LOWER / BLESS) + god mask | E |
 | 6 | Relic intents live (place / move / retrieve, push-point targeting) | F |
-| 7 | Scripture: conversion keys + coalescing + Maw gap-fill *(line co-write with Matthew)* | G |
-| 8 | Difficulty wiring + Zealot balance pass + WORKLOG/TODO/README sync | acceptance |
+| 7a | Scripture machinery: conversion event channel, coalescer, singular/plural cells, rival relic verbs voiced | G1, G2, G5 + channel |
+| 7b | Scripture lines: `citizen_converted` / `citizen_despair` × 2 gods, Maw gap-fill *(co-write with Matthew)* | G3, G4 |
+| 8 | Zealot balance pass, AI-vs-AI harness, step-6 constants → config, acceptance run + docs sync | acceptance |
+
+**Amendment 2026-09-11 (planning pass after steps 4-6).** Step 7 is
+split. Reading the code, the "machinery" half of it was larger than the
+"lines" half: conversions happen deep in `CitizenManager.tick` with no
+event, counter or callback, so nothing upstream can voice them; relic
+scripture never reached the HUD log at all (the player's is printed to
+stdout from the key handler, the AI's from step 6 was silent); and the
+cast path cannot carry a `{count}` token. **7a** builds all of that and
+needs no line-writing. **7b** is the co-write, same process as the
+2026-06-04 pass, and comes off the critical path - step 8 depends only
+on 7a, because the acceptance criterion "converts ≥ 5" cannot be
+measured without the event channel.
+
+Relic scripture, decided with Matthew: the **rival's** relic verbs are
+voiced into the log (it is the only channel through which the Maw's
+relic play reaches the player - an opponent telegraphing its move), the
+**player's** stay on stdout (a line confirming your own click tells you
+nothing), and one `[rival] relic_scripture` toggle silences the Maw's
+too. Volume is not a concern; conversions are the spam risk, and that is
+what the coalescer is for.
+
+Step 8 changes: "difficulty wiring" is already done (step 4, test D2).
+The headless balance numbers so far are against a *passive* player - no
+casts, no relics - and overstate the Maw. Step 8 runs the acceptance two
+ways: passive (spec-literal, comparable to the step-6 numbers) and an
+**Open Eye brain vs Maw brain** using the Steward preset for the Open
+Eye, which is that god's character. The three step-6 constants
+(`_RELIC_SPREAD_TILES`, `_MOVE_DEADBAND_TILES`, `_DRIFT_REF_TILES`)
+become `[rival]` knobs in the same pass. "Seed 42 ×3" is read as world
+seed 42 with three `ai_seed` values; three identical runs would only
+re-test determinism, which D4 covers.
 
 **Acceptance (step 8, headless, 600 sim_s, default config, seed 42 ×3
 runs):** the rival places ≥ 2 relics, casts ≥ 10 times, converts ≥ 5

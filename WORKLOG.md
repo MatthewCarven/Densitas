@@ -1605,3 +1605,47 @@ of belief), `attract_radius` / `attract_probability`, and
 `retrieve_panic`.
 
 Step 8 acceptance, partial: places >= 2 relics on every seed (3, 2, 2).
+
+---
+
+## 2026-09-11 — PR4 planning pass: does the back half still fit?
+
+Re-read steps 7-8 against the code as it stands after 4-6. Shape holds;
+two items no longer fit; one ordering change. Recorded in spec §13 as a
+dated amendment and in the TODO tracker.
+
+**Step 7 was a machinery step wearing a writing step's clothes.** The
+spec reads it as "lines + a rate limiter". The code says: conversions
+flip inside `CitizenManager.tick` with no event, counter or callback, so
+nothing can voice them; relic scripture never reaches the HUD log (the
+player's is a stdout print in the key handler, the AI's is silent); the
+cast path has no way to carry `{count}`; and it is six cells, not two,
+once singular/plural variants and both gods are counted. **Split into
+7a (machinery, no line-writing, mine) and 7b (the co-write).** 7b comes
+off the critical path entirely: step 8's "converts ≥ 5" is unmeasurable
+without 7a's event channel, and needs nothing from 7b.
+
+**Relic scripture — decided with Matthew.** His question: what is it
+really for, status messages with style? Honest answer: mechanically,
+today, yes - no line changes a number. Its intended job (the P6
+end-of-round propaganda log) is not built. So: the *rival's* relic verbs
+are voiced, because they are the only channel through which the Maw's
+relic play reaches the player and an opponent telegraphing its move is a
+legibility feature; the *player's* stay on stdout, because a line
+confirming your own click is noise; one `[rival] relic_scripture` toggle
+silences the Maw's too.
+
+**Step 8 amended.** Difficulty wiring is already done (step 4, D2). The
+step-6 balance numbers are against a passive player and overstate the
+Maw; step 8 adds an AI-vs-AI harness (Steward-brained Open Eye vs Zealot
+Maw) alongside the spec-literal passive run. The three step-6 targeting
+constants become `[rival]` knobs. "Seed 42 ×3" = world seed 42 × three
+`ai_seed`s.
+
+**Smaller:** the brief's Maw cast list omits Hunger Pang, now the Maw's
+most-cast power - one line before 7b. TODO's `densitas-scripture-voice`
+reference pointed at nothing; repointed at `rhetoric_generation_brief.md`.
+The step-6 self-starvation is density (foraging searches from the
+citizen's current position, so a crowded attractor disc empties), i.e. a
+knob, not a bug. §14's "after this PR the Maw can genuinely extinguish
+you" came true on two seeds of three; still P5's.
