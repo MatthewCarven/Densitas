@@ -807,7 +807,7 @@ def main(argv: list[str] | None = None) -> int:
                          power_system, active_mode, sim_time,
                          show_belief_overlay, show_food_overlay,
                          last_cast_failed_at, last_cast_reason,
-                         brush_size)
+                         brush_size, rival_ai=rival_ai)
         hud.draw(screen, citizen_mgr, belief,
                   powers=power_system, sim_t=sim_time,
                   active_mode=(int(active_mode) if active_mode is not None else None))
@@ -866,10 +866,28 @@ def _screen_to_tile(mx: int, my: int, cam, cfg) -> tuple[int, int]:
     return tx, ty
 
 
+def _rival_line(cm, rival_ai) -> str:
+    """PR4 playtest line: the faith outcomes so far and the Maw's last
+    decision, so a playtester can see conversion happening without
+    reading the console."""
+    conv = f"conv 0>1 {cm.conversions[(0, 1)]:d}  1>0 {cm.conversions[(1, 0)]:d}"
+    desp = f"despair f0 {cm.despairs[0]:d}  f1 {cm.despairs[1]:d}"
+    if rival_ai is None:
+        return f"Faith:  {conv}   {desp}   maw: none"
+    last = rival_ai.log[-1] if rival_ai.log else None
+    if last is None:
+        maw = "thinking"
+    else:
+        tgt = f"@({last.target[0]},{last.target[1]})" if last.target else ""
+        maw = f"{last.intent.name.lower()} {tgt} t={last.sim_t:.0f}"
+    return (f"Faith:  {conv}   {desp}   maw: {maw}  "
+            f"[{rival_ai.casts}c/{rival_ai.relic_acts}r]")
+
+
 def _draw_debug(screen, font, clock, cam, cfg, cm, belief, food,
                  ps, active_mode, sim_time, show_belief, show_food,
                  last_cast_failed_at: float, last_cast_reason: str,
-                 brush_size: int = 1) -> None:
+                 brush_size: int = 1, rival_ai=None) -> None:
     ts = cfg.render.tile_size
     tile_x = int((cam.x + cfg.render.viewport_w / 2) // ts)
     tile_y = int((cam.y + cfg.render.viewport_h / 2) // ts)
@@ -898,6 +916,7 @@ def _draw_debug(screen, font, clock, cam, cfg, cm, belief, food,
         f"Power:  mode {mode_name}   pool f0={pool0:.1f}  f1={pool1:.1f}  effects={len(ps.effects)}",
         f"Queue:  R x {len(ps.queues.get((0, 10), [])):d} ({len(ps.queues.get((0, 10), [])) * 2.0:.1f}s)  "
         f"L x {len(ps.queues.get((0, 11), [])):d} ({len(ps.queues.get((0, 11), [])) * 2.0:.1f}s)",
+        _rival_line(cm, rival_ai),
         err_line if err_line else "1-7 power - +/- brush (R/L) - LMB cast/queue - RMB cancel - C clear queue - F3 - B/F/K - ESC",
     ]
     pad = 8
