@@ -181,7 +181,6 @@ FOOD_TINT: tuple[int, int, int] = (110, 200, 80)
 PREVIEW_TINT_BY_KIND: dict[int, tuple[int, int, int]] = {
     0:  (200, 200, 240),    # INSPIRE   - pale blue
     1:  (200, 220, 220),    # CALM      - off-white
-    2:  (200, 120, 120),    # HUNGER_PANG - dim red
     10: (200, 170, 80),     # RAISE     - amber
     11: (130, 90, 60),      # LOWER     - brown
     12: (110, 200, 80),     # BLESS     - green
@@ -768,6 +767,57 @@ class PixelRenderer(Renderer):
             oy += s.get_height()
 
     # -- cast queue (P3-Queue) ---------------------------------------------
+
+    def blit_active_effects(self, screen: pygame.Surface, effects,
+                            cam_x: float, cam_y: float,
+                            duration: float) -> None:
+        """A ring on the ground for every live Bless / Curse.
+
+        PR4 playtest (2026-09-12): the Maw's main cast is Curse, and an
+        active Curse had no map visual for either god unless the food
+        overlay was on - the player's food shrank for no reason they
+        could see, and "the Maw does nothing but Lower" was the honest
+        report. Green ring for Bless, red for Curse, drawn at the AoE
+        radius, fading as the timer runs down so a fresh curse reads
+        hotter than a dying one. Enemy-cast effects get a dashed ring so
+        the two gods' work is told apart at a glance. Placeholder art;
+        PixelRenderer only, no new abstract method, same as the halo.
+        """
+        if not effects:
+            return
+        ts = self.cfg.tile_size
+        vw, vh = self.cfg.viewport_w, self.cfg.viewport_h
+        life = max(1e-6, float(duration))
+        GREEN = (120, 220, 110)
+        RED = (230, 70, 60)
+        for e in effects:
+            kind_val = int(e.kind)
+            if kind_val not in (12, 13):           # BLESS, CURSE
+                continue
+            tint = GREEN if kind_val == 12 else RED
+            frac = max(0.0, min(1.0, e.timer / life))
+            alpha = int(60 + 150 * frac)
+            r_px = int((e.radius + 0.5) * ts)
+            cx = int((e.tx + 0.5) * ts - cam_x)
+            cy = int((e.ty + 0.5) * ts - cam_y)
+            if cx + r_px < 0 or cy + r_px < 0 or cx - r_px >= vw or cy - r_px >= vh:
+                continue
+            size = r_px * 2 + 4
+            ov = pygame.Surface((size, size), pygame.SRCALPHA)
+            c = (r_px + 2, r_px + 2)
+            if e.caster_faction == 0:
+                pygame.draw.circle(ov, (*tint, alpha), c, r_px, width=2)
+            else:
+                # Dashed: 24 arcs, every other one drawn.
+                import math
+                for k in range(0, 24, 2):
+                    a0 = k * math.pi / 12
+                    a1 = (k + 1) * math.pi / 12
+                    pygame.draw.arc(ov, (*tint, alpha),
+                                    (2, 2, r_px * 2, r_px * 2), a0, a1, 2)
+            # A soft centre dot so the epicentre is findable at a glance.
+            pygame.draw.circle(ov, (*tint, alpha // 2), c, max(2, ts // 4))
+            screen.blit(ov, (cx - r_px - 2, cy - r_px - 2))
 
     def blit_cast_queue(self, screen: pygame.Surface, queues: dict,
                          cam_x: float, cam_y: float, font) -> None:

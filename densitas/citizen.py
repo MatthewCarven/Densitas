@@ -18,7 +18,6 @@ population long before exponential growth swamps the map.
 
 P3 PR1 adds two CitizenManager hooks the PowerSystem calls:
   * `inspire_citizen` — pre-empt one citizen's wander target.
-  * `find_nearest_other_faction` — Hunger-Pang dispatch helper.
   * `spawn_faction_at(...)` — general faction-spawn helper. Was
     `spawn_rival_stub` until PR4 step 3; the rival is a real opponent
     now, not a debug prop.
@@ -579,26 +578,6 @@ class CitizenManager:
         c.state = CitizenState.WANDER
         c.inspire_bias_until = self._sim_t + bias_duration
         return c
-
-    def find_nearest_other_faction(
-        self, tx: int, ty: int, my_faction: int, radius: int,
-    ) -> Optional[Citizen]:
-        """Used by Hunger-Pang. Returns nearest non-`my_faction`,
-        non-DYING citizen within radius, or None."""
-        best: Optional[Citizen] = None
-        best_d2 = float("inf")
-        r2 = radius * radius
-        for c in self.citizens:
-            if c.faction == my_faction or c.state == CitizenState.DYING:
-                continue
-            dx = c.x - tx
-            dy = c.y - ty
-            d2 = dx * dx + dy * dy
-            if d2 > r2 or d2 >= best_d2:
-                continue
-            best = c
-            best_d2 = d2
-        return best
 
     def drown_at(self, tx: int, ty: int, dying_duration: float) -> int:
         """Transition every live citizen currently standing on tile

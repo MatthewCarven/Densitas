@@ -17,12 +17,13 @@ a solo sandbox round. PR4 step 4 gives it a brain - it senses, scores and
 logs one decision every `ai_base_period / difficulty` sim seconds, but
 executes nothing until step 5. `--ai-debug` prints those decisions.
 
-Number keys 1-7 pick a power mode:
-    1 Inspire   2 Calm        3 Hunger Pang
-    4 Raise     5 Lower       6 Bless        7 Curse
+Number keys 1-6 pick a power mode:
+    1 Inspire   2 Calm
+    3 Raise     4 Lower       5 Bless        6 Curse
+(Hunger Pang was key 3 until 2026-09-15; the keys closed up.)
 Left-click to cast; right-click or Esc to cancel mode.
 
-While Raise (4) or Lower (5) is the active mode:
+While Raise (3) or Lower (4) is the active mode:
     +  / =      bump brush size up   (side length 1 -> 2 -> 3 -> 4; tiles 1 -> 4 -> 9 -> 16)
     -  / _      bump brush size down (cap at 1)
 Brush is top-left anchored: the cursor tile is the upper-left corner of
@@ -59,11 +60,10 @@ from .relics import (
 POWER_KEYS: dict[int, PowerKind] = {
     pygame.K_1: PowerKind.INSPIRE,
     pygame.K_2: PowerKind.CALM,
-    pygame.K_3: PowerKind.HUNGER_PANG,
-    pygame.K_4: PowerKind.RAISE,
-    pygame.K_5: PowerKind.LOWER,
-    pygame.K_6: PowerKind.BLESS,
-    pygame.K_7: PowerKind.CURSE,
+    pygame.K_3: PowerKind.RAISE,
+    pygame.K_4: PowerKind.LOWER,
+    pygame.K_5: PowerKind.BLESS,
+    pygame.K_6: PowerKind.CURSE,
 }
 
 
@@ -758,6 +758,12 @@ def main(argv: list[str] | None = None) -> int:
         renderer.blit_shatter_animations(
             screen, relic_mgr.relics, cam.x, cam.y, sim_time,
         )
+        # PR4 playtest: live Bless / Curse rings, under the citizens so a
+        # crowd reads over the ground it stands on. PixelRenderer only.
+        _blit_fx = getattr(renderer, "blit_active_effects", None)
+        if _blit_fx is not None and power_system.effects:
+            _blit_fx(screen, power_system.effects, cam.x, cam.y,
+                     cfg.powers.effect_duration_t1)
         renderer.blit_citizens(screen, citizen_mgr.iter_for_render(), cam.x, cam.y, sim_time)
 
         # P3-Queue: queued-cast chevrons sit above citizens, below preview.
@@ -917,7 +923,7 @@ def _draw_debug(screen, font, clock, cam, cfg, cm, belief, food,
         f"Queue:  R x {len(ps.queues.get((0, 10), [])):d} ({len(ps.queues.get((0, 10), [])) * 2.0:.1f}s)  "
         f"L x {len(ps.queues.get((0, 11), [])):d} ({len(ps.queues.get((0, 11), [])) * 2.0:.1f}s)",
         _rival_line(cm, rival_ai),
-        err_line if err_line else "1-7 power - +/- brush (R/L) - LMB cast/queue - RMB cancel - C clear queue - F3 - B/F/K - ESC",
+        err_line if err_line else "1-6 power - +/- brush (R/L) - LMB cast/queue - RMB cancel - C clear queue - F3 - B/F/K - ESC",
     ]
     pad = 8
     line_h = font.get_linesize()

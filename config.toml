@@ -117,7 +117,6 @@ scripture_log_max        = 32     # hard cap on retained entries
 # Cooldowns (sim seconds)
 inspire_cooldown      = 1.5
 calm_cooldown         = 1.5
-hunger_pang_cooldown  = 3.0
 raise_cooldown        = 2.0
 lower_cooldown        = 2.0
 bless_cooldown        = 4.0
@@ -130,7 +129,6 @@ effect_duration_t1    = 30.0
 
 # AoE radii (tiles)
 inspire_radius        = 4
-hunger_pang_radius    = 0
 bless_radius          = 4
 curse_radius          = 4
 

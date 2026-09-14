@@ -1980,3 +1980,41 @@ in the mid-game. Consistent with the design; noted for the relic spec.
 **Landed with this entry:** the palette fix; the harness placement
 change (spec §13's "near the seam" is now honest for a careful player);
 the F3 `Faith:` line from the 12th. 258 / 258 + 1 skipped.
+
+---
+
+## 2026-09-15 — Hunger Pang cut; Bless and Curse get a ring
+
+**Hunger Pang is out of the game.** Matthew's call from the playtest,
+and both halves of his reasoning held against the code: as the target
+there was no counterplay (one citizen sent to forage, unannounced), and
+as an effect it duplicated the food cap that already governs
+population. A P3 stub that PR4 made real, and making it real made it
+pointless. `PowerKind` value 2 and `Intent` value 2 are retired, not
+reused. `find_nearest_other_faction` went with it - its only caller.
+Dead config (`hunger_pang_cooldown`, `hunger_pang_radius` - nothing
+read them) went too. The `hunger_pang` rhetoric cell is gone; 7b is
+five cells now. **Keys closed up: 3 Raise, 4 Lower, 5 Bless, 6 Curse**,
+so the number keys and the HUD icon row stay in the same order; noted
+in README and the main docstring. F6 uses the Open Eye's brain now,
+because on an all-grass test world the Maw has only two live intents
+without it and the re-score bound needs three to be seen.
+
+**Live Bless / Curse draw a ring** at the AoE radius, green or red,
+fading with the timer - solid for the player's, dashed for the Maw's.
+Under the citizens, above the ground. The playtest's "the Maw casts
+Lower and nothing else" was the truth of the screen: Lower changes
+terrain, Curse changed a number in the food field, and the harness's
+250 casts a round reached the player as perhaps six. PixelRenderer
+only, no abstract method, same as the halo. Placeholder art.
+
+**Tests:** 257 / 257 + 1 skipped (test_18 removed with the power).
+Headless render smoke paints both ring styles.
+
+**Acceptance without Hunger Pang:** casts ≥ 10 still PASS at 129-156 a
+round - every one of them a Curse or a Lower now, i.e. every one of
+them does something. Places PASS, pool PASS. Converts: 0/0/0 passive,
+6/0/2 versus. Relic threat 0.00 (the standoff/blur geometry from the
+morning's entry). The Maw carpet-curses the player's food at ~one
+every four seconds once it is funded; with the ring, that is now
+something the player can see and answer with a Bless.

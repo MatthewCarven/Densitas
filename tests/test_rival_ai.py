@@ -117,12 +117,12 @@ def _power_cfg():
         k_tier=(0.5, 1.0, 4.0, 20.0, 80.0),
         rhetoric_fade_seconds=6.0,
         scripture_log_max=32,
-        inspire_cooldown=1.5, calm_cooldown=1.5, hunger_pang_cooldown=3.0,
+        inspire_cooldown=1.5, calm_cooldown=1.5,
         raise_cooldown=2.0, lower_cooldown=2.0,
         bless_cooldown=4.0, curse_cooldown=4.0,
         bless_multiplier=2.0, curse_multiplier=0.2,
         effect_duration_t1=30.0,
-        inspire_radius=4, hunger_pang_radius=0,
+        inspire_radius=4,
         bless_radius=4, curse_radius=4,
         queue_cap=16,
         relic=_relic_cfg(),
@@ -478,7 +478,7 @@ _RELIC_INTENTS = {Intent.RELIC_PLACE, Intent.RELIC_MOVE,
 
 _AGGRESSIVE = dataclasses.replace(
     PERSONALITIES["zealot"], name="forced-aggressive",
-    w_curse=1.0, w_hunger_pang=1.0, w_lower=1.0, w_bless=1.0,
+    w_curse=1.0, w_lower=1.0, w_bless=1.0,
     w_relic_place=1.0, w_relic_move=1.0, w_relic_retrieve=1.0,
     spend_floor=0.0, idle_floor=0.0,
 )
@@ -764,11 +764,16 @@ def test_f5_refinement_never_yields_an_unwalkable_tile():
 def test_f6_two_rescore_bound_holds():
     env = _Env(initial_pop=12)
     env.stuff(12, faction=1, at=(24, 14))
+    env.ps.pool[0] = 200.0
     env.ps.pool[1] = 200.0
     env.advance(0.2)
     env.sim_t += 0.2
 
-    ai = RivalAI(1, _AGGRESSIVE, _rival_cfg(**_SMALL_MAP), _power_cfg(),
+    # The Open Eye's brain: with Hunger Pang cut (2026-09-15) and no
+    # ridge on an all-grass world for LOWER, the Maw has only two live
+    # intents here - CURSE and RELIC_PLACE - and the bound needs three
+    # to be seen. The Open Eye may BLESS, which makes three.
+    ai = RivalAI(0, _AGGRESSIVE, _rival_cfg(**_SMALL_MAP), _power_cfg(),
                  seed=5)
 
     # Every target is unrefinable, so each pick is dropped and re-scored.

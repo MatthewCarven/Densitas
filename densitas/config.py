@@ -208,7 +208,6 @@ class PowerConfig:
     # Cooldown overrides (None = use POWERS spec default)
     inspire_cooldown: float
     calm_cooldown: float
-    hunger_pang_cooldown: float
     raise_cooldown: float
     lower_cooldown: float
     bless_cooldown: float
@@ -219,7 +218,6 @@ class PowerConfig:
     effect_duration_t1: float
     # AoE radii (some are 0 for point targets)
     inspire_radius: int
-    hunger_pang_radius: int
     bless_radius: int
     curse_radius: int
     # P3-Queue — cast queue (Raise / Lower).

@@ -92,12 +92,12 @@ def _power_cfg():
         k_tier=(0.5, 1.0, 4.0, 20.0, 80.0),
         rhetoric_fade_seconds=6.0,
         scripture_log_max=32,
-        inspire_cooldown=1.5, calm_cooldown=1.5, hunger_pang_cooldown=3.0,
+        inspire_cooldown=1.5, calm_cooldown=1.5,
         raise_cooldown=2.0, lower_cooldown=2.0,
         bless_cooldown=4.0, curse_cooldown=4.0,
         bless_multiplier=2.0, curse_multiplier=0.2,
         effect_duration_t1=30.0,
-        inspire_radius=4, hunger_pang_radius=0,
+        inspire_radius=4,
         bless_radius=4, curse_radius=4,
         queue_cap=16,
         relic=RelicConfig(
@@ -124,7 +124,6 @@ def make_env():
             "calm":    {"open_eye": {"consecration": ["test calm line"]}},
             "bless":   {"open_eye": {"consecration": ["test bless line"]}},
             "curse":   {"open_eye": {"consecration": ["test curse line"]}},
-            "hunger_pang": {"open_eye": {"consecration": ["test hunger pang line"]}},
             "raise":   {"open_eye": {"consecration": ["test raise line"]}},
             "lower":   {"open_eye": {"consecration": ["test lower line"]}},
         }, seed=seed)
@@ -362,20 +361,6 @@ def test_17_effective_food_regen_applies_multipliers():
     assert math.isclose(float(out[5, 7]), 2.0)
     # Outside radius: untouched.
     assert math.isclose(float(out[0, 0]), 1.0)
-
-
-def test_18_hunger_pang_stub_targets_other_faction(make_env):
-    cm, world, food, belief, ps, _ = make_env()
-    _stuff_population(cm, world, 20, faction=0)   # T1
-    # Drop one rival into the bullseye.
-    cm.citizens.append(cm._make_citizen(faction=1, x=5.5, y=5.5, age=10.0))
-    rival_idx = len(cm.citizens) - 1
-    rival = cm.citizens[rival_idx]
-    rival.state = CitizenState.IDLE
-    ps.pool[0] = 10.0
-    r = ps.cast(PowerKind.HUNGER_PANG, 0, 5, 5, cm, world, food, belief, sim_t=0.0)
-    assert r.ok, r.reason
-    assert rival.state == CitizenState.FORAGE
 
 
 def test_19_underfunded_cast_does_not_debit(make_env):

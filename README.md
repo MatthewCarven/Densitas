@@ -111,13 +111,18 @@ absent on upstream.
 - **Mouse to screen edge** — edge-scroll
 - **1** — Inspire mode (T0, cost 0)
 - **2** — Calm mode (T0)
-- **3** — Hunger Pang mode (T0, cost 1)
-- **4** — Raise terrain (T1, cost 5, +1 rank on the height ladder, repaints world surface, food cap/regen follow new biome) — **click-chainable**: extra clicks while cooling enqueue, amber ▲ chevrons mark queued tiles
-- **5** — Lower terrain (T1, cost 5, -1 rank; citizens on a tile that becomes WATER (or any unwalkable type) drown) — **click-chainable**: brown ▼ chevrons
+- **3** — Raise terrain (T1, cost 5, +1 rank on the height ladder, repaints world surface, food cap/regen follow new biome) — **click-chainable**: extra clicks while cooling enqueue, amber ▲ chevrons mark queued tiles
+- **4** — Lower terrain (T1, cost 5, -1 rank; citizens on a tile that becomes WATER (or any unwalkable type) drown) — **click-chainable**: brown ▼ chevrons
 - **Right-click on a queued tile** (in Raise/Lower mode) — cancel that tile, refund the belief
 - **C** (in Raise/Lower mode) — clear the entire queue for that power, refund all
-- **6** — Bless field (T1, cost 10, doubles food regen 30s)
-- **7** — Curse field (T1, cost 10, food regen 20% 30s)
+- **5** — Bless field (T1, cost 10, doubles food regen 30s)
+- **6** — Curse field (T1, cost 10, food regen 20% 30s)
+
+Hunger Pang was key 3 until 2026-09-15 (cut after the first PR4 playtest:
+no counterplay for the target, and hunger already caps population); the
+keys closed up. Active Bless and Curse draw a ring on the ground at
+their radius - solid for yours, dashed for the Maw's - fading as they
+run down.
 - **Left-click** — cast at the mouse tile (only while a mode is selected)
 - **Right-click** / **ESC** (with mode selected) — cancel mode
 - **F3** — toggle debug overlay

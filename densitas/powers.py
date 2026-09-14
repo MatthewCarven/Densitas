@@ -11,7 +11,7 @@ See `Densitas_P3.md` for the spec. Summary:
                     casts, dispatches effects, ticks per sim frame.
 
 P3 PR1 ships:
-  T0 — Inspire (real), Calm (stub), Hunger Pang (stub-against-rival).
+  T0 — Inspire (real), Calm (stub). Hunger Pang was cut 2026-09-15.
   T1 — Bless, Curse.
 
 P3 PR2 ships:
@@ -53,7 +53,9 @@ class PowerKind(enum.IntEnum):
     """All powers. Add new kinds at the bottom — values are stable."""
     INSPIRE     = 0    # T0
     CALM        = 1    # T0  (stub for P3; needs FLEE state)
-    HUNGER_PANG = 2    # T0  (needs rival citizens to bite)
+    # 2 was HUNGER_PANG - cut after the first PR4 playtest (2026-09-15):
+    # no counterplay for the target, and hunger already caps population.
+    # The value stays retired so nothing serialised ever means it.
     RAISE       = 10   # T1  (terrain; PR2)
     LOWER       = 11   # T1  (terrain; PR2)
     BLESS       = 12   # T1
@@ -80,7 +82,6 @@ class PowerSpec:
 POWERS: dict[PowerKind, PowerSpec] = {
     PowerKind.INSPIRE:     PowerSpec(PowerKind.INSPIRE,     "Inspire",      tier=1, belief_cost=0.0,  cooldown=1.5, aoe_radius=4,  duration=0.0,  rhetoric_key="inspire"),
     PowerKind.CALM:        PowerSpec(PowerKind.CALM,        "Calm",         tier=1, belief_cost=0.0,  cooldown=1.5, aoe_radius=2,  duration=5.0,  rhetoric_key="calm"),
-    PowerKind.HUNGER_PANG: PowerSpec(PowerKind.HUNGER_PANG, "Hunger Pang",  tier=1, belief_cost=1.0,  cooldown=3.0, aoe_radius=0,  duration=0.0,  rhetoric_key="hunger_pang"),
     PowerKind.RAISE:       PowerSpec(PowerKind.RAISE,       "Raise",        tier=2, belief_cost=5.0,  cooldown=2.0, aoe_radius=0,  duration=0.0,  rhetoric_key="raise"),
     PowerKind.LOWER:       PowerSpec(PowerKind.LOWER,       "Lower",        tier=2, belief_cost=5.0,  cooldown=2.0, aoe_radius=0,  duration=0.0,  rhetoric_key="lower"),
     PowerKind.BLESS:       PowerSpec(PowerKind.BLESS,       "Bless",        tier=2, belief_cost=10.0, cooldown=4.0, aoe_radius=4,  duration=30.0, rhetoric_key="bless"),
@@ -204,7 +205,6 @@ class PowerSystem:
         self._dispatch: dict[PowerKind, Callable] = {
             PowerKind.INSPIRE:     self._dispatch_inspire,
             PowerKind.CALM:        self._dispatch_calm,
-            PowerKind.HUNGER_PANG: self._dispatch_hunger_pang,
             PowerKind.RAISE:       self._dispatch_raise,        # PR2
             PowerKind.LOWER:       self._dispatch_lower,        # PR2
             PowerKind.BLESS:       self._dispatch_bless,
@@ -355,20 +355,6 @@ class PowerSystem:
                         food, belief, sim_t):
         # Stub: FLEE state doesn't exist yet (P4). No-op + scripture line.
         pass
-
-    def _dispatch_hunger_pang(self, faction, tx, ty, strength, citizens,
-                               world, food, belief, sim_t):
-        # Stub: pick nearest other-faction citizen and force them to FORAGE.
-        # If no rivals exist (P3 default), this is effectively a no-op.
-        target = citizens.find_nearest_other_faction(
-            tx=tx, ty=ty, my_faction=faction, radius=12,
-        )
-        if target is None:
-            return
-        target.state = CitizenState.FORAGE
-        # Point at their current location so they search-from-here.
-        target.target_x = float(target.x)
-        target.target_y = float(target.y)
 
     def _dispatch_bless(self, faction, tx, ty, strength, citizens,
                          world, food, belief, sim_t):
@@ -635,7 +621,7 @@ def _tile_valid_for(kind: PowerKind, tile_id: int) -> tuple[bool, str]:
                        int(Tile.LAVA), int(Tile.BLIGHTED)):
             return False, "no food here"
         return True, ""
-    if kind in (PowerKind.INSPIRE, PowerKind.CALM, PowerKind.HUNGER_PANG):
+    if kind in (PowerKind.INSPIRE, PowerKind.CALM):
         return True, ""
     return True, ""
 

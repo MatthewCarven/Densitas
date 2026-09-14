@@ -150,7 +150,6 @@ COOLDOWN_ICONS: tuple[tuple[int, int, str, tuple[int, int, int]], ...] = (
     # (PowerKind value, tier_required, label, accent_color)
     (0,  1, "I", HUD_ACCENT),                         # INSPIRE
     (1,  1, "C", (160, 160, 200)),                    # CALM
-    (2,  1, "H", (200, 100, 100)),                    # HUNGER_PANG
     (10, 2, "R", (200, 170, 80)),                     # RAISE
     (11, 2, "L", (140, 100, 70)),                     # LOWER
     (12, 2, "B", HUD_GREEN),                          # BLESS
@@ -717,7 +716,7 @@ class HUD:
 
     def _draw_cooldown_row(self, screen, origin, tier_idx, powers,
                             active_mode: Optional[int]) -> None:
-        """7 small icons, one per power kind. Tier-locked = dim grey.
+        """6 small icons, one per power kind. Tier-locked = dim grey.
         Cooling = darkened with a small numeric overlay. Active = brightened ring."""
         ix, iy = origin
         size = 30

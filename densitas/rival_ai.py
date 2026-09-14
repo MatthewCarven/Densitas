@@ -95,7 +95,7 @@ class Intent(enum.IntEnum):
     """The PR4 intent menu (§8). Values are stable; new intents append."""
     IDLE             = 0
     CAST_CURSE       = 1
-    CAST_HUNGER_PANG = 2
+    # 2 was CAST_HUNGER_PANG - cut 2026-09-15 with the power. Retired.
     CAST_LOWER       = 3
     CAST_BLESS       = 4
     RELIC_PLACE      = 5
@@ -106,7 +106,6 @@ class Intent(enum.IntEnum):
 # Intents that resolve to a power cast, and the power they cast.
 INTENT_POWER: dict[Intent, PowerKind] = {
     Intent.CAST_CURSE:       PowerKind.CURSE,
-    Intent.CAST_HUNGER_PANG: PowerKind.HUNGER_PANG,
     Intent.CAST_LOWER:       PowerKind.LOWER,
     Intent.CAST_BLESS:       PowerKind.BLESS,
 }
@@ -122,15 +121,13 @@ _RELIC_SCRIPTURE_KEY: dict[Intent, str] = {
 # candidate, so it is absent. Order is load-bearing: the jitter vector is
 # drawn against it, so changing it changes every seeded decision stream.
 SCORED_INTENTS: tuple[Intent, ...] = (
-    Intent.CAST_CURSE, Intent.CAST_HUNGER_PANG,
-    Intent.CAST_LOWER, Intent.CAST_BLESS,
+    Intent.CAST_CURSE, Intent.CAST_LOWER, Intent.CAST_BLESS,
     Intent.RELIC_PLACE, Intent.RELIC_MOVE, Intent.RELIC_RETRIEVE,
 )
 
 # Intent -> the AIPersonality field holding its weight.
 WEIGHT_ATTR: dict[Intent, str] = {
     Intent.CAST_CURSE:       "w_curse",
-    Intent.CAST_HUNGER_PANG: "w_hunger_pang",
     Intent.CAST_LOWER:       "w_lower",
     Intent.CAST_BLESS:       "w_bless",
     Intent.RELIC_PLACE:      "w_relic_place",
@@ -145,7 +142,6 @@ class AIPersonality:
     name: str
     # Intent weights. 0 disables an intent for this personality.
     w_curse:            float
-    w_hunger_pang:      float
     w_lower:            float
     w_bless:            float
     w_relic_place:      float
@@ -173,7 +169,7 @@ PERSONALITIES: dict[str, AIPersonality] = {
     # density.
     "zealot": AIPersonality(
         name="zealot",
-        w_curse=1.0, w_hunger_pang=0.8, w_lower=0.3, w_bless=0.1,
+        w_curse=1.0, w_lower=0.3, w_bless=0.1,
         w_relic_place=0.9, w_relic_move=0.5, w_relic_retrieve=0.3,
         spend_floor=0.0, idle_floor=0.05, retrieve_panic=0.75,
         relic_forward_bias=0.65, jitter=0.05,
@@ -184,7 +180,7 @@ PERSONALITIES: dict[str, AIPersonality] = {
     # near-total passivity, which is the joke the spec intends.
     "steward": AIPersonality(
         name="steward",
-        w_curse=0.2, w_hunger_pang=0.2, w_lower=0.2, w_bless=1.0,
+        w_curse=0.2, w_lower=0.2, w_bless=1.0,
         w_relic_place=0.5, w_relic_move=0.2, w_relic_retrieve=0.9,
         spend_floor=60.0, idle_floor=0.25, retrieve_panic=0.35,
         relic_forward_bias=0.15, jitter=0.05,
@@ -194,7 +190,7 @@ PERSONALITIES: dict[str, AIPersonality] = {
     # like a timid Zealot. `w_pilgrimage` joins the dataclass with T2.
     "trickster": AIPersonality(
         name="trickster",
-        w_curse=0.7, w_hunger_pang=0.6, w_lower=0.2, w_bless=0.1,
+        w_curse=0.7, w_lower=0.2, w_bless=0.1,
         w_relic_place=0.6, w_relic_move=0.4, w_relic_retrieve=0.5,
         spend_floor=0.0, idle_floor=0.15, retrieve_panic=0.50,
         relic_forward_bias=0.40, jitter=0.08,
@@ -462,15 +458,6 @@ class RivalAI:
         if self._cast_gate(PowerKind.CURSE, s, power_system):
             cx, cy = s.seam_peak_cell
             u[Intent.CAST_CURSE] = clamp01(
-                float(s.b_enemy[cy, cx]) / enemy_ref)
-
-        # HUNGER_PANG - hit the enemy's densest cell. Normalising the
-        # enemy field by its own peak makes this exactly 1.0 while we aim
-        # at the argmax; the formula stays general if the target rule ever
-        # moves off it.
-        if self._cast_gate(PowerKind.HUNGER_PANG, s, power_system):
-            cx, cy = s.enemy_peak_cell
-            u[Intent.CAST_HUNGER_PANG] = clamp01(
                 float(s.b_enemy[cy, cx]) / enemy_ref)
 
         # BLESS - own-density shortfall against the enemy. Masked off for
@@ -846,7 +833,6 @@ class RivalAI:
                 return ridge[0] if ridge else None
             cell = {
                 Intent.CAST_CURSE:       s.seam_peak_cell,
-                Intent.CAST_HUNGER_PANG: s.enemy_peak_cell,
                 Intent.CAST_BLESS:       s.own_peak_cell,
             }[intent]
             return self.refine(
