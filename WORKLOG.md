@@ -1912,3 +1912,71 @@ the Maw halts twelve tiles from relics worth twenty citizens each and
 its bled belief never approaches 1.5× that. That decision is parked
 with Matthew, and nothing in targeting or demographics is left in its
 way.
+
+---
+
+## 2026-09-15 — First live playtest of PR4 (Matthew, 2026-09-12)
+
+Five answers to the five questions, and what each one turned into.
+
+**1. "I see the Maw casting stuff like raise and lower but nothing
+else."** The Maw has no Raise - its kit is Curse, Hunger Pang, Lower
+(Bless is masked). What he saw was Lower changing terrain, because that
+is the *only* Maw cast with a map visual. Hunger Pang - ~90 % of its
+casts - has no visual and a `<hunger_pang>` placeholder line; an active
+Curse has no map visual for either god unless the food overlay is on.
+The headless harness reports 250 casts a round; a player at the screen
+sees perhaps six. Legibility finding, two actions below (drop Hunger
+Pang; give Curse a visual).
+
+**2. "After I lost a couple of relics I restarted and am much more
+careful with them now."** The harness reported player-relic threat 0.00
+in every run, yet the first human lost two relics in ten minutes. Two
+things: the harness's passive player placed its relics at spawn, where
+the seam never reaches; and Matthew placed *into* the Maw's field on his
+first go. The harness now places the passive player's relics forward -
+home, mid-field, edge of the home field - with a spiral search for a
+placeable tile, because seed 42 has a hill ridge along the whole
+forward axis (HILL is not walkable) and the first version silently
+placed two of three.
+
+Threat is still 0.00 headless, and now I know why: the chain's standoff
+(12 tiles) is wider than the belief blur's reach (~8), so a Maw relic
+can never threaten a player relic through bleed alone - only Maw
+*citizens* nearby can. A player relic past the midpoint just stops the
+Maw's chain twelve tiles short of it (the chain respects enemy relics;
+a forward relic is a border marker) and the Maw plants one flag instead
+of two. The criterion as written is out of a passive player's reach
+under the chain design. It was met the way that matters: by a human,
+who lost two relics and changed how he plays. Recorded, not chased.
+
+**3. "Haven't seen any conversions yet, but the peasants are all the
+same colour."** They were. `CITIZEN_PALETTE` gave both factions a
+parchment robe - (220,210,180) v (190,180,170) - and the only faction
+marker was four accent pixels on a 36-pixel torso. P1's "x 2 factions"
+sprite set never actually distinguished them, which nobody noticed
+until there were two factions on one screen. A conversion was
+therefore invisible once the ceremony halo faded. **The Maw wears
+blood now** - robe (118,38,44), skin toward bone - chthonic per the
+pantheon. Placeholder shade; Matthew's to tune. Zero conversions in
+ten minutes is consistent with the harness (0-6 a round).
+
+**4. "Drop Hunger Pang - there is nothing you can do about it, and
+hunger already occurs as a natural population cap."** Design call,
+taken: the power comes out of the game, next entry. Both halves of the
+reasoning hold against the code - as the target there is no counter
+(the victim is one citizen sent to forage, unannounced), and as an
+effect it duplicates the food cap that already governs population. It
+was a P3 stub ("needs rival citizens to bite") that PR4 made real, and
+making it real made it pointless.
+
+**5. "Don't really notice extras hanging around relics, but they were
+at the food limit anyway."** Correct on both counts. At equilibrium
+most citizens are FORAGE-bound, and FORAGE skips attractors entirely
+(hunger trumps devotion, relic spec pillar 2); on top of that the pull
+is 0.15 scaled by population since 8c. Relics move belief, not bodies,
+in the mid-game. Consistent with the design; noted for the relic spec.
+
+**Landed with this entry:** the palette fix; the harness placement
+change (spec §13's "near the seam" is now honest for a careful player);
+the F3 `Faith:` line from the 12th. 258 / 258 + 1 skipped.

@@ -40,8 +40,15 @@ PIXEL_PALETTE: dict[Tile, tuple[tuple[int, int, int],
 
 CITIZEN_PALETTE: dict[int, tuple[tuple[int, int, int], tuple[int, int, int],
                                   tuple[int, int, int], tuple[int, int, int]]] = {
+    # (skin, robe, accent, outline). The robe is ~36 of the sprite's
+    # pixels, the accent 4-8, so the ROBE is what carries the faction at
+    # a glance. Both used to be parchment - playtest 2026-09-12: "the
+    # peasants are all the same colour" - which made a conversion
+    # invisible once the ceremony halo faded. The Maw wears blood now
+    # (chthonic, bone-and-blood per the pantheon); the exact shade is
+    # Matthew's to tune.
     0: ((230, 200, 170), (220, 210, 180), (90, 200, 220), (30, 28, 30)),
-    1: ((210, 190, 170), (190, 180, 170), (160, 30, 30), (30, 28, 30)),
+    1: ((200, 182, 160), (118, 38, 44), (160, 30, 30), (30, 28, 30)),
 }
 
 CITIZEN_W = 8

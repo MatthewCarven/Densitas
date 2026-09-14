@@ -40,11 +40,18 @@ from .rhetoric import Rhetoric, ScriptureCoalescer, make_picker
 from .rival_ai import PERSONALITIES, Intent, RivalAI
 from .world import World
 
-# The three faction-0 debug placements from main.SEED_RELIC_PLACEMENTS,
-# centre-relative. A passive player never places relics, and the
-# acceptance clause about player relics under threat needs some to exist.
-_PLAYER_SEED_RELICS: tuple[tuple[int, int, int], ...] = (
-    (0, -4, -1), (1, 3, 0), (2, -8, -6),      # (slot, dx, dy)
+# Where a passive player's three relics go: this many tiles from the
+# player's centre TOWARD the rival spawn, with a small lateral offset.
+# Spec §13 says "player relics near the seam"; the debug set at spawn
+# never came under threat in any run, while Matthew lost two relics in
+# his first live game because he had placed forward. One at home, one
+# mid-field, one at the edge of the home field: a careful player. (A
+# relic past the midpoint just stops the Maw's chain twelve tiles short
+# of it - the chain respects enemy relics - and the Maw places one flag
+# instead of two. A forward relic is a border marker, which is a fine
+# thing for it to be, but not what the acceptance run should model.)
+_PLAYER_SEED_RELICS: tuple[tuple[int, float, int], ...] = (
+    (0, 6.0, -1), (1, 14.0, 2), (2, 24.0, 0),      # (slot, forward, lateral)
 )
 
 MODES = ("passive", "versus")
@@ -166,8 +173,30 @@ def run_round(cfg: config.Config, *, mode: str = "passive", sim_s: float = 600.0
         seed_player_relics = (mode == "passive")
     if seed_player_relics:
         cx, cy = world.width // 2, world.height // 2
-        for slot, dx, dy in _PLAYER_SEED_RELICS:
-            relics.place(0, slot, cx + dx, cy + dy, world, 0.0)
+        rx = cfg.rival.spawn_frac_x * world.width - cx
+        ry = cfg.rival.spawn_frac_y * world.height - cy
+        norm = max(1e-9, (rx * rx + ry * ry) ** 0.5)
+        ux, uy = rx / norm, ry / norm
+        for slot, fwd, lat in _PLAYER_SEED_RELICS:
+            tx = int(round(cx + ux * fwd - uy * lat))
+            ty = int(round(cy + uy * fwd + ux * lat))
+            # Nearest placeable tile, spiralling out to radius 6: seed 42
+            # has a hill ridge along the whole forward axis, and a
+            # silently skipped relic would weaken the threat clause.
+            for r in range(0, 7):
+                placed = False
+                for dx in range(-r, r + 1):
+                    for dy in range(-r, r + 1):
+                        if max(abs(dx), abs(dy)) != r:
+                            continue
+                        if relics.place(0, slot, tx + dx, ty + dy, world,
+                                        0.0)[0]:
+                            placed = True
+                            break
+                    if placed:
+                        break
+                if placed:
+                    break
     cm.sync_attractors_from_relics(relics.relics, cfg.powers.relic.attract_radius)
     belief.recompute(cm.citizens, relics=relics.relics, sim_t=0.0)
 
